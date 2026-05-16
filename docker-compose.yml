@@ -1,0 +1,14 @@
+services:
+  house-server:
+    build:
+      context: ./apps/server
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    env_file:
+      - .env
+    volumes:
+      - house-data:/data
+
+volumes:
+  house-data:
