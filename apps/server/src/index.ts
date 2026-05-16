@@ -7,6 +7,7 @@ import { AuthError, verifyDeviceToken, verifySetupSecret } from "./auth.js";
 import { loadConfig, type Config } from "./config.js";
 import { createDeviceToken, createPairingCode, hashSecret } from "./crypto.js";
 import { openDatabase, type PairingCodeRow } from "./db.js";
+import { runHermesCommand } from "./hermes.js";
 import { setupPageHtml } from "./setup-page.js";
 
 const pairSchema = z.object({
@@ -180,13 +181,20 @@ function createServer(config: Config, db: Database.Database) {
     const device = verifyDeviceToken(request, db, config);
     const body = validateBody(commandSchema, request.body);
     const createdAt = nowIso();
+    const reply = await runHermesCommand(body.text, config);
 
     db.prepare(
       "INSERT INTO audit_log (id, device_id, action, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)"
-    ).run(randomUUID(), device.id, "command.mock", JSON.stringify({ text: body.text }), createdAt);
+    ).run(
+      randomUUID(),
+      device.id,
+      config.hermesCommandMode === "oneshot" ? "command.hermes" : "command.mock",
+      JSON.stringify({ text: body.text }),
+      createdAt
+    );
 
     return {
-      reply: `Mock Hermes heard: ${body.text}`
+      reply
     };
   });
 

@@ -4,6 +4,10 @@ export type Config = {
   houseSetupSecret: string;
   pairingCodeTtlMinutes: number;
   tokenHashSecret: string;
+  hermesCommandMode: "mock" | "oneshot";
+  hermesWorkingDirectory: string;
+  hermesPythonPath: string;
+  hermesTimeoutSeconds: number;
 };
 
 function readNumber(name: string, fallback: number): number {
@@ -30,11 +34,23 @@ function readString(name: string, fallback: string): string {
 }
 
 export function loadConfig(): Config {
+  const hermesCommandMode = readString("HERMES_COMMAND_MODE", "mock");
+  if (hermesCommandMode !== "mock" && hermesCommandMode !== "oneshot") {
+    throw new Error("HERMES_COMMAND_MODE must be mock or oneshot");
+  }
+
   return {
     port: readNumber("PORT", 8787),
     databasePath: readString("DATABASE_PATH", "./house.db"),
     houseSetupSecret: readString("HOUSE_SETUP_SECRET", "change-this-long-random-string"),
     pairingCodeTtlMinutes: readNumber("PAIRING_CODE_TTL_MINUTES", 10),
-    tokenHashSecret: readString("TOKEN_HASH_SECRET", "change-this-too")
+    tokenHashSecret: readString("TOKEN_HASH_SECRET", "change-this-too"),
+    hermesCommandMode,
+    hermesWorkingDirectory: readString("HERMES_WORKING_DIRECTORY", "/home/neb/.hermes/hermes-agent"),
+    hermesPythonPath: readString(
+      "HERMES_PYTHON_PATH",
+      "/home/neb/.hermes/hermes-agent/venv/bin/python"
+    ),
+    hermesTimeoutSeconds: readNumber("HERMES_TIMEOUT_SECONDS", 120)
   };
 }
