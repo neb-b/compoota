@@ -1,10 +1,10 @@
-# Hermes House
+# Compoota
 
 ## What this is
 
-Hermes House is a small companion stack for a local Hermes house agent running on a Raspberry Pi. The mobile app talks only to the house-server on your LAN. The house-server will later talk to Hermes locally, but this first version returns a mock Hermes response.
+Compoota is a small companion stack for a local house agent running on a Raspberry Pi. The mobile app talks only to the house-server on your LAN. The house-server can run in mock mode for setup, or call the private local agent when configured on the Pi.
 
-Hermes is not exposed publicly.
+The local agent is not exposed publicly.
 
 ## Current status
 
@@ -44,7 +44,7 @@ open http://localhost:8787/setup
 ```sh
 ssh pi@PI_IP
 git clone repo
-cd hermes-house
+cd compoota
 cp .env.example .env
 # edit .env and set long random secrets
 docker compose up -d --build
@@ -84,7 +84,7 @@ CORS is permissive for LAN development in this version. This is not production-g
 
 - Cloudflare Tunnel or remote access
 - OAuth, accounts, or hosted auth providers
-- Real Hermes calls
+- Deep live tool-event streaming
 - Home Assistant integration
 - MCP
 - Push notifications or reminders

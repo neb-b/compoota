@@ -21,13 +21,60 @@ type Connection = {
   deviceToken: string;
 };
 
+type ConnectionPreferences = {
+  serverUrl: string;
+  deviceName: string;
+};
+
+type ActivityStep = {
+  id: string;
+  label: string;
+  detail?: string;
+  status: 'pending' | 'running' | 'done' | 'error';
+  at?: string;
+};
+
 type Message = {
   id: string;
   role: 'user' | 'assistant' | 'system';
   text: string;
+  activity?: ActivityStep[];
 };
 
 const STORAGE_KEY = 'compoota.connection.v1';
+const PREFERENCES_KEY = 'compoota.connection-preferences.v1';
+const MESSAGE_HISTORY_KEY_PREFIX = 'compoota.messages.v1.';
+
+const CONNECT_MESSAGE: Message = {
+  id: 'welcome',
+  role: 'assistant',
+  text: 'Connect to your Compoota house-server, then send a command.',
+};
+
+const READY_MESSAGE: Message = {
+  id: 'ready',
+  role: 'assistant',
+  text: 'Compoota is awake. What should we try?',
+};
+
+const PENDING_ACTIVITY: ActivityStep[] = [
+  {
+    id: 'compoota.server.received.pending',
+    label: 'Sending message to the house-server',
+    status: 'done',
+  },
+  {
+    id: 'compoota.server.auth.pending',
+    label: 'Checking this device',
+    status: 'done',
+  },
+  {
+    id: 'compoota.agent.start.pending',
+    label: 'Handing it to the local agent',
+    detail: 'Compoota is nudging the house brain.',
+    status: 'running',
+  },
+];
 
 function normalizeServerUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, '');
@@ -53,6 +100,61 @@ function messageId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function messageHistoryKey(deviceId: string): string {
+  return `${MESSAGE_HISTORY_KEY_PREFIX}${deviceId}`;
+}
+
+function activitySummary(activity: ActivityStep[]): string {
+  if (activity.some((step) => step.status === 'error')) {
+    return 'Compoota hit a snag';
+  }
+
+  if (activity.some((step) => step.status === 'running')) {
+    return 'Compoota is working';
+  }
+
+  return `${activity.length} step${activity.length === 1 ? '' : 's'} completed`;
+}
+
+function parseMessages(value: string | null): Message[] | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = JSON.parse(value) as Message[];
+  if (!Array.isArray(parsed)) {
+    return null;
+  }
+
+  const messages = parsed.filter(
+    (message) =>
+      message &&
+      typeof message.id === 'string' &&
+      typeof message.text === 'string' &&
+      (message.role === 'user' || message.role === 'assistant' || message.role === 'system'),
+  ).map((message) => ({
+    ...message,
+    activity: Array.isArray(message.activity) ? message.activity : undefined,
+  }));
+
+  return messages.length > 0 ? messages : null;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function GlassSurface({
   children,
   style,
@@ -70,7 +172,7 @@ function GlassSurface({
       <GlassView
         colorScheme={isDark ? 'dark' : 'light'}
         glassEffectStyle="regular"
-        isInteractive
+        isInteractive={false}
         style={style}
         tintColor={tintColor}>
         {children}
@@ -79,25 +181,6 @@ function GlassSurface({
   }
 
   return <View style={style}>{children}</View>;
-}
-
-function MenuGlyph({ color }: { color: string }) {
-  return (
-    <View style={glyphStyles.menuGlyph}>
-      <View style={[glyphStyles.menuBar, { backgroundColor: color }]} />
-      <View style={[glyphStyles.menuBar, { backgroundColor: color }]} />
-    </View>
-  );
-}
-
-function WaveGlyph({ color }: { color: string }) {
-  return (
-    <View style={glyphStyles.waveGlyph}>
-      {[12, 20, 28, 18, 24].map((height, index) => (
-        <View key={index} style={[glyphStyles.waveBar, { height, backgroundColor: color }]} />
-      ))}
-    </View>
-  );
 }
 
 export default function HomeScreen() {
@@ -113,33 +196,40 @@ export default function HomeScreen() {
   const [pairingCode, setPairingCode] = useState('');
   const [deviceName, setDeviceName] = useState('');
   const [command, setCommand] = useState('');
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      text: 'Connect to your Hermes house server, then send a command.',
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([CONNECT_MESSAGE]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [checkingServer, setCheckingServer] = useState(false);
+  const [expandedActivity, setExpandedActivity] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     async function loadConnection() {
       try {
-        const stored = await AsyncStorage.getItem(STORAGE_KEY);
+        const [stored, preferences] = await Promise.all([
+          AsyncStorage.getItem(STORAGE_KEY),
+          AsyncStorage.getItem(PREFERENCES_KEY),
+        ]);
+
+        if (preferences) {
+          const parsedPreferences = JSON.parse(preferences) as ConnectionPreferences;
+          if (parsedPreferences.serverUrl) {
+            setServerUrl(parsedPreferences.serverUrl);
+          }
+          if (parsedPreferences.deviceName) {
+            setDeviceName(parsedPreferences.deviceName);
+          }
+        }
+
         if (stored) {
           const parsed = JSON.parse(stored) as Connection;
           if (parsed.serverUrl && parsed.deviceId && parsed.deviceToken) {
+            const storedMessages = parseMessages(
+              await AsyncStorage.getItem(messageHistoryKey(parsed.deviceId)),
+            );
             setConnection(parsed);
             setServerUrl(parsed.serverUrl);
-            setMessages([
-              {
-                id: 'ready',
-                role: 'assistant',
-                text: 'Connected. What should Hermes help with?',
-              },
-            ]);
+            setMessages(storedMessages ?? [READY_MESSAGE]);
           }
         }
       } catch {
@@ -156,6 +246,16 @@ export default function HomeScreen() {
     scrollRef.current?.scrollToEnd({ animated: true });
   }, [messages]);
 
+  useEffect(() => {
+    if (!connection || loading) {
+      return;
+    }
+
+    AsyncStorage.setItem(messageHistoryKey(connection.deviceId), JSON.stringify(messages)).catch(
+      () => undefined,
+    );
+  }, [connection, loading, messages]);
+
   async function connect() {
     setError('');
     setBusy(true);
@@ -171,14 +271,23 @@ export default function HomeScreen() {
         throw new Error('Enter the 6-digit pairing code from the setup page.');
       }
 
-      const response = await fetch(`${normalizedUrl}/pair`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pairingCode: cleanedCode,
-          deviceName: cleanedName,
-        }),
-      });
+      const health = await fetchWithTimeout(`${normalizedUrl}/health`, { method: 'GET' }, 6000);
+      if (!health.ok) {
+        throw new Error(`Server health check failed with status ${health.status}.`);
+      }
+
+      const response = await fetchWithTimeout(
+        `${normalizedUrl}/pair`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pairingCode: cleanedCode,
+            deviceName: cleanedName,
+          }),
+        },
+        12000,
+      );
 
       if (!response.ok) {
         throw new Error(await readError(response));
@@ -190,28 +299,61 @@ export default function HomeScreen() {
         deviceId: data.deviceId,
         deviceToken: data.deviceToken,
       };
+      const nextPreferences = {
+        serverUrl: normalizedUrl,
+        deviceName: cleanedName,
+      };
 
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextConnection));
+      await Promise.all([
+        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextConnection)),
+        AsyncStorage.setItem(PREFERENCES_KEY, JSON.stringify(nextPreferences)),
+      ]);
       setConnection(nextConnection);
+      setServerUrl(normalizedUrl);
       setPairingCode('');
       setDeviceName(cleanedName);
-      setMessages([
-        {
-          id: messageId(),
-          role: 'assistant',
-          text: 'Connected. What should Hermes help with?',
-        },
-      ]);
+      setMessages([{ ...READY_MESSAGE, id: messageId() }]);
     } catch (err) {
       const message =
         err instanceof TypeError
-          ? 'Server unreachable. Check the URL and LAN connection.'
-          : err instanceof Error
-            ? err.message
-            : 'Pairing failed.';
+          ? 'Server unreachable. Check the URL, Wi-Fi, and LAN connection.'
+          : err instanceof Error && err.name === 'AbortError'
+            ? 'Server did not respond. Check that the phone and Pi are on the same LAN.'
+            : err instanceof Error
+              ? err.message
+              : 'Pairing failed.';
       setError(message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function testServer() {
+    setError('');
+    setCheckingServer(true);
+
+    try {
+      const normalizedUrl = normalizeServerUrl(serverUrl);
+      const response = await fetchWithTimeout(`${normalizedUrl}/health`, { method: 'GET' }, 6000);
+
+      if (!response.ok) {
+        throw new Error(`Server health check failed with status ${response.status}.`);
+      }
+
+      setServerUrl(normalizedUrl);
+      setError('Server is reachable. Use a fresh pairing code to connect.');
+    } catch (err) {
+      const message =
+        err instanceof TypeError
+          ? 'Server unreachable from this device. Check Expo Go Local Network permission and Wi-Fi.'
+          : err instanceof Error && err.name === 'AbortError'
+            ? 'Server did not respond from this device. Check Expo Go Local Network permission.'
+            : err instanceof Error
+              ? err.message
+              : 'Server check failed.';
+      setError(message);
+    } finally {
+      setCheckingServer(false);
     }
   }
 
@@ -232,14 +374,18 @@ export default function HomeScreen() {
     setMessages((current) => [...current, { id: messageId(), role: 'user', text }]);
 
     try {
-      const response = await fetch(`${connection.serverUrl}/command`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${connection.deviceToken}`,
-          'Content-Type': 'application/json',
+      const response = await fetchWithTimeout(
+        `${connection.serverUrl}/command`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${connection.deviceToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ text }),
         },
-        body: JSON.stringify({ text }),
-      });
+        180000,
+      );
 
       if (response.status === 401) {
         throw new Error('This device is unauthorized or revoked. Reset and pair again.');
@@ -249,15 +395,22 @@ export default function HomeScreen() {
         throw new Error(await readError(response));
       }
 
-      const data = (await response.json()) as { reply: string };
+      const data = (await response.json()) as { reply: string; activity?: ActivityStep[] };
       setMessages((current) => [
         ...current,
-        { id: messageId(), role: 'assistant', text: data.reply },
+        {
+          id: messageId(),
+          role: 'assistant',
+          text: data.reply,
+          activity: Array.isArray(data.activity) ? data.activity : undefined,
+        },
       ]);
     } catch (err) {
       const message =
         err instanceof TypeError
           ? 'Server unreachable. Check the URL and LAN connection.'
+          : err instanceof Error && err.name === 'AbortError'
+            ? 'Compoota is taking too long to respond. Try again in a moment.'
           : err instanceof Error
             ? err.message
             : 'Command failed.';
@@ -273,13 +426,7 @@ export default function HomeScreen() {
     setConnection(null);
     setCommand('');
     setError('');
-    setMessages([
-      {
-        id: 'welcome',
-        role: 'assistant',
-        text: 'Connect to your Hermes house server, then send a command.',
-      },
-    ]);
+    setMessages([CONNECT_MESSAGE]);
   }
 
   if (loading) {
@@ -297,23 +444,11 @@ export default function HomeScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.keyboard}>
           <View style={styles.connectPage}>
-            <View style={styles.connectTopBar}>
-              <Pressable style={styles.iconButton}>
-                <Text style={styles.iconText}>+</Text>
-              </Pressable>
-              <GlassSurface isDark={isDark} style={styles.statusPill} tintColor={colors.glassTint}>
-                <Text style={styles.statusText}>Pairing</Text>
-              </GlassSurface>
-              <Pressable style={styles.iconButton}>
-                <Text style={styles.iconText}>...</Text>
-              </Pressable>
-            </View>
-
             <View style={styles.connectContent}>
-              <Text style={styles.brand}>Hermes House</Text>
+              <Text style={styles.brand}>Compoota</Text>
               <Text style={styles.connectTitle}>Connect your local companion</Text>
               <Text style={styles.connectCopy}>
-                Pair this phone with the house-server on your LAN. Hermes stays private.
+                Pair this phone with the house-server on your LAN. The house brain stays private.
               </Text>
             </View>
 
@@ -358,19 +493,34 @@ export default function HomeScreen() {
 
               {error ? <Text style={styles.error}>{error}</Text> : null}
 
-              <Pressable
-                disabled={busy}
-                onPress={connect}
-                style={({ pressed }) => [
-                  styles.connectButton,
-                  (pressed || busy) && styles.pressed,
-                ]}>
-                {busy ? (
-                  <ActivityIndicator color={colors.actionText} />
-                ) : (
-                  <Text style={styles.connectButtonText}>Connect</Text>
-                )}
-              </Pressable>
+              <View style={styles.connectActions}>
+                <Pressable
+                  disabled={busy || checkingServer}
+                  onPress={connect}
+                  style={({ pressed }) => [
+                    styles.connectButton,
+                    (pressed || busy) && styles.pressed,
+                  ]}>
+                  {busy ? (
+                    <ActivityIndicator color={colors.actionText} />
+                  ) : (
+                    <Text style={styles.connectButtonText}>Connect</Text>
+                  )}
+                </Pressable>
+                <Pressable
+                  disabled={busy || checkingServer}
+                  onPress={testServer}
+                  style={({ pressed }) => [
+                    styles.testButton,
+                    (pressed || checkingServer) && styles.pressed,
+                  ]}>
+                  {checkingServer ? (
+                    <ActivityIndicator color={colors.text} />
+                  ) : (
+                    <Text style={styles.testButtonText}>Test server</Text>
+                  )}
+                </Pressable>
+              </View>
             </GlassSurface>
           </View>
         </KeyboardAvoidingView>
@@ -385,17 +535,14 @@ export default function HomeScreen() {
         style={styles.keyboard}>
         <View style={styles.chatShell}>
           <GlassSurface isDark={isDark} style={styles.chatHeader} tintColor={colors.glassTint}>
-            <Pressable style={styles.headerIcon}>
-              <MenuGlyph color={colors.text} />
-            </Pressable>
             <View style={styles.headerTitleWrap}>
-              <Text style={styles.chatTitle}>Hermes</Text>
+              <Text style={styles.chatTitle}>Compoota</Text>
               <Text numberOfLines={1} style={styles.chatSubtitle}>
                 {connection.serverUrl}
               </Text>
             </View>
-            <Pressable onPress={resetConnection} style={styles.headerIcon}>
-              <Text style={styles.composeIcon}>...</Text>
+            <Pressable onPress={resetConnection} style={styles.resetButton}>
+              <Text style={styles.resetButtonText}>Reset</Text>
             </Pressable>
           </GlassSurface>
 
@@ -413,7 +560,7 @@ export default function HomeScreen() {
                   message.role === 'system' && styles.systemMessageRow,
                 ]}>
                 {message.role === 'assistant' ? (
-                  <Text style={styles.assistantMark}>H</Text>
+                  <Text style={styles.assistantMark}>C</Text>
                 ) : null}
                 <View
                   style={[
@@ -429,38 +576,97 @@ export default function HomeScreen() {
                     ]}>
                     {message.text}
                   </Text>
+                  {message.activity?.length ? (
+                    <Pressable
+                      onPress={() =>
+                        setExpandedActivity((current) => ({
+                          ...current,
+                          [message.id]: !current[message.id],
+                        }))
+                      }
+                      style={styles.activityCard}>
+                      <View style={styles.activityHeader}>
+                        <Text style={styles.activityTitle}>{activitySummary(message.activity)}</Text>
+                        <Text style={styles.activityToggle}>
+                          {expandedActivity[message.id] ? 'Hide' : 'Show'}
+                        </Text>
+                      </View>
+                      {expandedActivity[message.id] ? (
+                        <View style={styles.activityList}>
+                          {message.activity.map((step) => (
+                            <View key={step.id} style={styles.activityStep}>
+                              <View
+                                style={[
+                                  styles.activityDot,
+                                  step.status === 'error' && styles.activityDotError,
+                                  step.status === 'running' && styles.activityDotRunning,
+                                ]}
+                              />
+                              <View style={styles.activityTextWrap}>
+                                <Text style={styles.activityStepLabel}>{step.label}</Text>
+                                {step.detail ? (
+                                  <Text style={styles.activityStepDetail}>{step.detail}</Text>
+                                ) : null}
+                              </View>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
+                    </Pressable>
+                  ) : null}
                 </View>
               </View>
             ))}
+            {busy ? (
+              <View style={styles.messageRow}>
+                <Text style={styles.assistantMark}>C</Text>
+                <View style={styles.pendingActivityPanel}>
+                  <View style={styles.thinkingBubble}>
+                    <ActivityIndicator color={colors.secondaryText} size="small" />
+                    <Text style={styles.thinkingText}>Compoota is working...</Text>
+                  </View>
+                  <View style={styles.pendingActivityWrap}>
+                    {PENDING_ACTIVITY.map((step) => (
+                      <View key={step.id} style={styles.pendingStep}>
+                        <View
+                          style={[
+                            styles.activityDot,
+                            step.status === 'running' && styles.activityDotRunning,
+                          ]}
+                        />
+                        <Text style={styles.pendingStepText}>{step.label}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              </View>
+            ) : null}
           </ScrollView>
 
           {error ? <Text style={styles.chatError}>{error}</Text> : null}
 
           <View style={styles.composerWrap}>
             <GlassSurface isDark={isDark} style={styles.composer} tintColor={colors.glassTint}>
-              <Pressable style={styles.addButton}>
-                <Text style={styles.addIcon}>+</Text>
-              </Pressable>
               <TextInput
                 multiline
                 onChangeText={setCommand}
                 onSubmitEditing={Platform.OS === 'web' ? sendCommand : undefined}
-                placeholder="Ask Hermes"
+                placeholder="Ask Compoota"
                 placeholderTextColor={colors.placeholder}
                 style={styles.commandInput}
                 value={command}
               />
-            <Pressable
+              <Pressable
                 disabled={busy}
                 onPress={sendCommand}
                 style={({ pressed }) => [
-                  styles.voiceButton,
+                  styles.sendButton,
                   (pressed || busy) && styles.pressed,
                 ]}>
                 {busy ? (
                   <Text style={styles.busyText}>...</Text>
                 ) : (
-                  <WaveGlyph color={colors.actionText} />
+                  <Text style={styles.sendIcon}>↑</Text>
                 )}
               </Pressable>
             </GlassSurface>
@@ -470,28 +676,6 @@ export default function HomeScreen() {
     </SafeAreaView>
   );
 }
-
-const glyphStyles = StyleSheet.create({
-  menuGlyph: {
-    width: 22,
-    gap: 6,
-  },
-  menuBar: {
-    height: 3,
-    borderRadius: 2,
-    width: 22,
-  },
-  waveGlyph: {
-    height: 30,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-  },
-  waveBar: {
-    width: 4,
-    borderRadius: 2,
-  },
-});
 
 function createColors(isDark: boolean) {
   return {
@@ -533,55 +717,8 @@ function createStyles(isDark: boolean, bottomInset: number) {
     connectPage: {
       flex: 1,
       paddingHorizontal: 22,
-      paddingTop: 12,
+      paddingTop: 24,
       paddingBottom: Math.max(bottomInset, 16) + 8,
-    },
-    connectTopBar: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      minHeight: 56,
-    },
-    iconButton: {
-      width: 52,
-      height: 52,
-      borderRadius: 26,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: colors.elevated,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-      shadowColor,
-      shadowOpacity: 0.12,
-      shadowRadius: 18,
-      shadowOffset: { width: 0, height: 10 },
-    },
-    iconText: {
-      color: colors.text,
-      fontSize: 26,
-      fontWeight: '600',
-      lineHeight: 28,
-    },
-    statusPill: {
-      height: 52,
-      minWidth: 132,
-      borderRadius: 26,
-      alignItems: 'center',
-      justifyContent: 'center',
-      overflow: 'hidden',
-      backgroundColor: colors.elevated,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-      shadowColor,
-      shadowOpacity: 0.14,
-      shadowRadius: 18,
-      shadowOffset: { width: 0, height: 10 },
-    },
-    statusText: {
-      color: '#147ef5',
-      fontSize: 20,
-      fontWeight: '700',
-      letterSpacing: 0,
     },
     connectContent: {
       flex: 1,
@@ -650,18 +787,35 @@ function createStyles(isDark: boolean, bottomInset: number) {
       fontSize: 14,
       lineHeight: 20,
     },
+    connectActions: {
+      gap: 10,
+      marginTop: 4,
+    },
     connectButton: {
       height: 54,
       borderRadius: 27,
       backgroundColor: colors.action,
       alignItems: 'center',
       justifyContent: 'center',
-      marginTop: 4,
     },
     connectButtonText: {
       color: colors.actionText,
       fontSize: 16,
       fontWeight: '800',
+    },
+    testButton: {
+      height: 50,
+      borderRadius: 25,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+    },
+    testButtonText: {
+      color: colors.text,
+      fontSize: 15,
+      fontWeight: '700',
     },
     pressed: {
       opacity: 0.62,
@@ -682,7 +836,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
-      paddingHorizontal: 8,
+      paddingHorizontal: 18,
       backgroundColor: colors.elevated,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
@@ -691,24 +845,24 @@ function createStyles(isDark: boolean, bottomInset: number) {
       shadowRadius: 20,
       shadowOffset: { width: 0, height: 12 },
     },
-    headerIcon: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
+    resetButton: {
+      minWidth: 58,
+      height: 38,
+      borderRadius: 19,
       alignItems: 'center',
       justifyContent: 'center',
+      paddingHorizontal: 12,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     },
-    composeIcon: {
+    resetButtonText: {
       color: colors.text,
-      fontSize: 24,
-      lineHeight: 24,
-      fontWeight: '800',
-      marginTop: -8,
+      fontSize: 13,
+      fontWeight: '700',
     },
     headerTitleWrap: {
-      alignItems: 'center',
+      alignItems: 'flex-start',
       flex: 1,
-      paddingHorizontal: 8,
+      paddingRight: 12,
     },
     chatTitle: {
       color: colors.text,
@@ -777,6 +931,112 @@ function createStyles(isDark: boolean, bottomInset: number) {
       paddingVertical: 9,
       backgroundColor: isDark ? 'rgba(217,61,61,0.14)' : 'rgba(217,61,61,0.08)',
     },
+    thinkingBubble: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 9,
+      borderRadius: 18,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)',
+    },
+    thinkingText: {
+      color: colors.secondaryText,
+      fontSize: 15,
+      lineHeight: 20,
+      fontWeight: '600',
+    },
+    activityCard: {
+      marginTop: 12,
+      borderRadius: 16,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    activityHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 12,
+    },
+    activityTitle: {
+      flex: 1,
+      color: colors.secondaryText,
+      fontSize: 13,
+      fontWeight: '700',
+      lineHeight: 18,
+    },
+    activityToggle: {
+      color: colors.text,
+      fontSize: 12,
+      fontWeight: '800',
+    },
+    activityList: {
+      gap: 10,
+      marginTop: 12,
+    },
+    activityStep: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: 10,
+    },
+    activityDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      marginTop: 6,
+      backgroundColor: isDark ? '#f6f6f4' : '#171717',
+      opacity: 0.46,
+    },
+    activityDotRunning: {
+      opacity: 1,
+      backgroundColor: '#147ef5',
+    },
+    activityDotError: {
+      opacity: 1,
+      backgroundColor: colors.error,
+    },
+    activityTextWrap: {
+      flex: 1,
+      gap: 2,
+    },
+    activityStepLabel: {
+      color: colors.text,
+      fontSize: 13,
+      lineHeight: 18,
+      fontWeight: '700',
+    },
+    activityStepDetail: {
+      color: colors.secondaryText,
+      fontSize: 12,
+      lineHeight: 17,
+    },
+    pendingActivityPanel: {
+      flexShrink: 1,
+      gap: 8,
+      maxWidth: '86%',
+    },
+    pendingActivityWrap: {
+      gap: 7,
+      paddingHorizontal: 14,
+      paddingVertical: 11,
+      borderRadius: 18,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.035)',
+    },
+    pendingStep: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: 9,
+    },
+    pendingStepText: {
+      flex: 1,
+      color: colors.secondaryText,
+      fontSize: 13,
+      lineHeight: 18,
+      fontWeight: '600',
+    },
     messageText: {
       color: colors.text,
       fontSize: 17,
@@ -815,8 +1075,9 @@ function createStyles(isDark: boolean, bottomInset: number) {
       overflow: 'hidden',
       flexDirection: 'row',
       alignItems: 'flex-end',
-      gap: 8,
-      paddingHorizontal: 10,
+      gap: 10,
+      paddingLeft: 18,
+      paddingRight: 8,
       paddingVertical: 8,
       backgroundColor: colors.elevated,
       borderWidth: StyleSheet.hairlineWidth,
@@ -826,37 +1087,30 @@ function createStyles(isDark: boolean, bottomInset: number) {
       shadowRadius: 28,
       shadowOffset: { width: 0, height: 16 },
     },
-    addButton: {
-      width: 46,
-      height: 46,
-      borderRadius: 23,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    addIcon: {
-      color: colors.text,
-      fontSize: 38,
-      fontWeight: '300',
-      lineHeight: 40,
-      marginTop: -3,
-    },
     commandInput: {
       flex: 1,
       minHeight: 46,
       maxHeight: 118,
       color: colors.text,
-      paddingHorizontal: 2,
+      paddingHorizontal: 0,
       paddingVertical: 12,
-      fontSize: 20,
+      fontSize: 18,
       lineHeight: 24,
     },
-    voiceButton: {
+    sendButton: {
       width: 46,
       height: 46,
       borderRadius: 23,
       backgroundColor: colors.action,
       alignItems: 'center',
       justifyContent: 'center',
+    },
+    sendIcon: {
+      color: colors.actionText,
+      fontSize: 26,
+      fontWeight: '900',
+      lineHeight: 28,
+      marginTop: -2,
     },
     busyText: {
       color: colors.actionText,
