@@ -1,0 +1,10 @@
+name: compoota-progress
+version: "0.1.0"
+description: "Writes lightweight Compoota progress events from Hermes tool hooks."
+author: "Compoota"
+kind: standalone
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_llm_call
+  - post_llm_call

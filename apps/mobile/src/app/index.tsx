@@ -39,6 +39,17 @@ type Message = {
   role: 'user' | 'assistant' | 'system';
   text: string;
   activity?: ActivityStep[];
+  isStreaming?: boolean;
+};
+
+type StreamReader = {
+  read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+};
+
+type StreamingResponse = Response & {
+  body?: {
+    getReader?: () => StreamReader;
+  } | null;
 };
 
 const STORAGE_KEY = 'compoota.connection.v1';
@@ -109,11 +120,41 @@ function activitySummary(activity: ActivityStep[]): string {
     return 'Compoota hit a snag';
   }
 
-  if (activity.some((step) => step.status === 'running')) {
-    return 'Compoota is working';
+  const running = [...activity].reverse().find((step) => step.status === 'running');
+  if (running) {
+    return running.label;
   }
 
-  return `${activity.length} step${activity.length === 1 ? '' : 's'} completed`;
+  const latest = activity[activity.length - 1];
+  return latest?.label ?? `${activity.length} step${activity.length === 1 ? '' : 's'} completed`;
+}
+
+function mergeActivity(existing: ActivityStep[] = [], next: ActivityStep): ActivityStep[] {
+  const filtered = existing.filter((step) => step.id !== next.id);
+  return [...filtered, next];
+}
+
+function parseSseBlock(block: string): { event: string; data: unknown } | null {
+  let event = 'message';
+  const dataLines: string[] = [];
+
+  for (const line of block.split(/\r?\n/)) {
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return null;
+  }
+
+  try {
+    return { event, data: JSON.parse(dataLines.join('\n')) };
+  } catch {
+    return null;
+  }
 }
 
 function parseMessages(value: string | null): Message[] | null {
@@ -371,11 +412,29 @@ export default function HomeScreen() {
     setError('');
     setBusy(true);
     setCommand('');
-    setMessages((current) => [...current, { id: messageId(), role: 'user', text }]);
+    const assistantId = messageId();
+    setExpandedActivity((current) => ({ ...current, [assistantId]: false }));
+    setMessages((current) => [
+      ...current,
+      { id: messageId(), role: 'user', text },
+      {
+        id: assistantId,
+        role: 'assistant',
+        text: '',
+        activity: PENDING_ACTIVITY,
+        isStreaming: true,
+      },
+    ]);
+
+    function updateAssistant(updater: (message: Message) => Message) {
+      setMessages((current) =>
+        current.map((message) => (message.id === assistantId ? updater(message) : message)),
+      );
+    }
 
     try {
       const response = await fetchWithTimeout(
-        `${connection.serverUrl}/command`,
+        `${connection.serverUrl}/command/stream`,
         {
           method: 'POST',
           headers: {
@@ -395,16 +454,51 @@ export default function HomeScreen() {
         throw new Error(await readError(response));
       }
 
-      const data = (await response.json()) as { reply: string; activity?: ActivityStep[] };
-      setMessages((current) => [
-        ...current,
-        {
-          id: messageId(),
-          role: 'assistant',
-          text: data.reply,
-          activity: Array.isArray(data.activity) ? data.activity : undefined,
-        },
-      ]);
+      const reader = (response as StreamingResponse).body?.getReader?.();
+      if (!reader) {
+        throw new Error('This device cannot read the progress stream yet.');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\n\n/);
+        buffer = blocks.pop() ?? '';
+
+        for (const block of blocks) {
+          const parsed = parseSseBlock(block);
+          if (!parsed) {
+            continue;
+          }
+
+          if (parsed.event === 'activity') {
+            const step = parsed.data as ActivityStep;
+            updateAssistant((message) => ({
+              ...message,
+              activity: mergeActivity(message.activity, step),
+            }));
+          } else if (parsed.event === 'reply') {
+            const data = parsed.data as { reply?: string; activity?: ActivityStep[] };
+            updateAssistant((message) => ({
+              ...message,
+              text: data.reply || '',
+              activity: Array.isArray(data.activity) ? data.activity : message.activity,
+              isStreaming: false,
+            }));
+          } else if (parsed.event === 'error') {
+            throw new Error('Command failed.');
+          }
+        }
+      }
+
+      updateAssistant((message) => ({ ...message, isStreaming: false }));
     } catch (err) {
       const message =
         err instanceof TypeError
@@ -415,7 +509,17 @@ export default function HomeScreen() {
             ? err.message
             : 'Command failed.';
       setError(message);
-      setMessages((current) => [...current, { id: messageId(), role: 'system', text: message }]);
+      updateAssistant((current) => ({
+        ...current,
+        text: current.text || message,
+        activity: mergeActivity(current.activity, {
+          id: 'compoota.client.error',
+          label: message,
+          status: 'error',
+          at: new Date().toISOString(),
+        }),
+        isStreaming: false,
+      }));
     } finally {
       setBusy(false);
     }
@@ -568,14 +672,16 @@ export default function HomeScreen() {
                     message.role === 'user' && styles.userMessage,
                     message.role === 'system' && styles.systemMessage,
                   ]}>
-                  <Text
-                    style={[
-                      styles.messageText,
-                      message.role === 'user' && styles.userMessageText,
-                      message.role === 'system' && styles.systemMessageText,
-                    ]}>
-                    {message.text}
-                  </Text>
+                  {message.text ? (
+                    <Text
+                      style={[
+                        styles.messageText,
+                        message.role === 'user' && styles.userMessageText,
+                        message.role === 'system' && styles.systemMessageText,
+                      ]}>
+                      {message.text}
+                    </Text>
+                  ) : null}
                   {message.activity?.length ? (
                     <Pressable
                       onPress={() =>
@@ -586,15 +692,25 @@ export default function HomeScreen() {
                       }
                       style={styles.activityCard}>
                       <View style={styles.activityHeader}>
-                        <Text style={styles.activityTitle}>{activitySummary(message.activity)}</Text>
-                        <Text style={styles.activityToggle}>
-                          {expandedActivity[message.id] ? 'Hide' : 'Show'}
-                        </Text>
+                        <View style={styles.activityTitleWrap}>
+                          {message.isStreaming ? (
+                            <ActivityIndicator color={colors.secondaryText} size="small" />
+                          ) : null}
+                          <Text style={styles.activityTitle}>{activitySummary(message.activity)}</Text>
+                        </View>
+                        <Text style={styles.activityToggle}>{expandedActivity[message.id] ? 'Hide' : 'Show'}</Text>
                       </View>
                       {expandedActivity[message.id] ? (
                         <View style={styles.activityList}>
-                          {message.activity.map((step) => (
-                            <View key={step.id} style={styles.activityStep}>
+                          {message.activity.map((step, index) => (
+                            <View
+                              key={step.id}
+                              style={[
+                                styles.activityStep,
+                                step.status === 'done' &&
+                                  index < (message.activity?.length ?? 0) - 1 &&
+                                  styles.activityStepFaded,
+                              ]}>
                               <View
                                 style={[
                                   styles.activityDot,
@@ -617,30 +733,6 @@ export default function HomeScreen() {
                 </View>
               </View>
             ))}
-            {busy ? (
-              <View style={styles.messageRow}>
-                <Text style={styles.assistantMark}>C</Text>
-                <View style={styles.pendingActivityPanel}>
-                  <View style={styles.thinkingBubble}>
-                    <ActivityIndicator color={colors.secondaryText} size="small" />
-                    <Text style={styles.thinkingText}>Compoota is working...</Text>
-                  </View>
-                  <View style={styles.pendingActivityWrap}>
-                    {PENDING_ACTIVITY.map((step) => (
-                      <View key={step.id} style={styles.pendingStep}>
-                        <View
-                          style={[
-                            styles.activityDot,
-                            step.status === 'running' && styles.activityDotRunning,
-                          ]}
-                        />
-                        <Text style={styles.pendingStepText}>{step.label}</Text>
-                      </View>
-                    ))}
-                  </View>
-                </View>
-              </View>
-            ) : null}
           </ScrollView>
 
           {error ? <Text style={styles.chatError}>{error}</Text> : null}
@@ -961,6 +1053,12 @@ function createStyles(isDark: boolean, bottomInset: number) {
       justifyContent: 'space-between',
       gap: 12,
     },
+    activityTitleWrap: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
     activityTitle: {
       flex: 1,
       color: colors.secondaryText,
@@ -981,6 +1079,9 @@ function createStyles(isDark: boolean, bottomInset: number) {
       flexDirection: 'row',
       alignItems: 'flex-start',
       gap: 10,
+    },
+    activityStepFaded: {
+      opacity: 0.48,
     },
     activityDot: {
       width: 8,

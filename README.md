@@ -56,6 +56,15 @@ Then open:
 http://PI_IP:8787/setup
 ```
 
+Optional live progress from the local agent:
+
+```sh
+mkdir -p ~/.hermes/plugins
+cp -R plugins/compoota-progress ~/.hermes/plugins/compoota-progress
+# add compoota-progress to plugins.enabled in ~/.hermes/config.yaml
+systemctl --user restart compoota-house.service
+```
+
 ## Mobile app setup
 
 ```sh
@@ -84,7 +93,6 @@ CORS is permissive for LAN development in this version. This is not production-g
 
 - Cloudflare Tunnel or remote access
 - OAuth, accounts, or hosted auth providers
-- Deep live tool-event streaming
 - Home Assistant integration
 - MCP
 - Push notifications or reminders

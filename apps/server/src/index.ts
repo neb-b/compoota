@@ -34,6 +34,11 @@ function commandActivity(id: string, label: string, detail?: string): CommandAct
   };
 }
 
+function sendSse(reply: { raw: NodeJS.WritableStream }, event: string, data: unknown): void {
+  reply.raw.write(`event: ${event}\n`);
+  reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
 function validateBody<T>(schema: z.ZodSchema<T>, body: unknown): T {
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
@@ -212,6 +217,61 @@ function createServer(config: Config, db: Database.Database) {
       reply: result.reply,
       activity: fullActivity
     };
+  });
+
+  app.post("/command/stream", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const body = validateBody(commandSchema, request.body);
+    const createdAt = nowIso();
+    const runId = randomUUID();
+    const activity: CommandActivity[] = [];
+
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no"
+    });
+
+    function emit(next: CommandActivity): void {
+      const existingIndex = activity.findIndex((item) => item.id === next.id);
+      if (existingIndex >= 0) {
+        activity.splice(existingIndex, 1);
+      }
+      activity.push(next);
+      sendSse(reply, "activity", next);
+    }
+
+    emit(commandActivity("compoota.server.received", "House-server received the message"));
+    emit(commandActivity("compoota.server.auth", "Device token checked out", `Device: ${device.name}`));
+
+    try {
+      const result = await runHermesCommand(body.text, config, {
+        runId,
+        onActivity: emit
+      });
+
+      db.prepare(
+        "INSERT INTO audit_log (id, device_id, action, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(
+        randomUUID(),
+        device.id,
+        config.hermesCommandMode === "oneshot" ? "command.hermes" : "command.mock",
+        JSON.stringify({ text: body.text, activity, streamed: true, runId }),
+        createdAt
+      );
+
+      sendSse(reply, "reply", { reply: result.reply, activity });
+      sendSse(reply, "done", { ok: true });
+    } catch (error) {
+      app.log.error(error);
+      const failed = commandActivity("compoota.server.error", "Compoota hit a snag", undefined);
+      failed.status = "error";
+      emit(failed);
+      sendSse(reply, "error", { error: "Command failed" });
+    } finally {
+      reply.raw.end();
+    }
   });
 
   return app;
