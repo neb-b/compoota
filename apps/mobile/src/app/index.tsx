@@ -5,7 +5,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
-  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -14,9 +13,18 @@ import {
   Text,
   TextInput,
   useColorScheme,
+  useWindowDimensions,
   View,
   ViewStyle,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  interpolate,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Connection = {
@@ -49,6 +57,12 @@ type Message = {
 const STORAGE_KEY = 'compoota.connection.v1';
 const PREFERENCES_KEY = 'compoota.connection-preferences.v1';
 const MESSAGE_HISTORY_KEY_PREFIX = 'compoota.messages.v1.';
+const SIDEBAR_EDGE_HIT_SLOP = 30;
+const SIDEBAR_SPRING = {
+  damping: 28,
+  mass: 0.9,
+  stiffness: 240,
+};
 
 const CONNECT_MESSAGE: Message = {
   id: 'welcome',
@@ -343,10 +357,12 @@ function GlassSurface({
 export default function HomeScreen() {
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
+  const { width: screenWidth } = useWindowDimensions();
   const isDark = colorScheme === 'dark';
   const styles = useMemo(() => createStyles(isDark, insets.bottom), [isDark, insets.bottom]);
   const colors = useMemo(() => createColors(isDark), [isDark]);
   const scrollRef = useRef<ScrollView>(null);
+  const sidebarOpenDistance = Math.min(screenWidth * 0.76, 340);
 
   const [connection, setConnection] = useState<Connection | null>(null);
   const [serverUrl, setServerUrl] = useState('http://192.168.1.50:8787');
@@ -361,6 +377,10 @@ export default function HomeScreen() {
   const [selectedActivityMessageId, setSelectedActivityMessageId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
+  const sidebarTranslateX = useSharedValue(0);
+  const sidebarGestureStartTranslateX = useSharedValue(0);
+  const sidebarGestureEnabled = useSharedValue(false);
+  const sidebarOpenValue = useSharedValue(false);
 
   const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId);
   const sidebarServerHost = useMemo(() => {
@@ -374,22 +394,91 @@ export default function HomeScreen() {
       return connection.serverUrl;
     }
   }, [connection]);
-  const sidebarPanResponder = useMemo(
+  const openSidebar = () => {
+    setSidebarOpen(true);
+    sidebarOpenValue.value = true;
+    sidebarTranslateX.value = withSpring(sidebarOpenDistance, SIDEBAR_SPRING);
+  };
+
+  const closeSidebar = () => {
+    setSidebarOpen(false);
+    sidebarOpenValue.value = false;
+    sidebarTranslateX.value = withSpring(0, SIDEBAR_SPRING);
+  };
+
+  const sidebarPanGesture = useMemo(
     () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (event, gesture) =>
-          !sidebarOpen &&
-          event.nativeEvent.pageX < 28 &&
-          gesture.dx > 12 &&
-          Math.abs(gesture.dy) < 36,
-        onPanResponderRelease: (_event, gesture) => {
-          if (gesture.dx > 44) {
-            setSidebarOpen(true);
+      Gesture.Pan()
+        .activeOffsetX([-8, 8])
+        .failOffsetY([-16, 16])
+        .onBegin((event) => {
+          sidebarGestureStartTranslateX.value = sidebarTranslateX.value;
+          sidebarGestureEnabled.value =
+            sidebarOpenValue.value || event.absoluteX <= SIDEBAR_EDGE_HIT_SLOP;
+        })
+        .onUpdate((event) => {
+          if (!sidebarGestureEnabled.value) {
+            return;
           }
-        },
-      }),
-    [sidebarOpen],
+
+          const nextTranslateX = Math.min(
+            sidebarOpenDistance,
+            Math.max(0, sidebarGestureStartTranslateX.value + event.translationX),
+          );
+          sidebarTranslateX.value = nextTranslateX;
+        })
+        .onEnd((event) => {
+          if (!sidebarGestureEnabled.value) {
+            return;
+          }
+
+          const projectedX = sidebarTranslateX.value + event.velocityX * 0.18;
+          const shouldOpen =
+            event.velocityX > 520 || (event.velocityX > -520 && projectedX > sidebarOpenDistance * 0.48);
+          sidebarOpenValue.value = shouldOpen;
+          sidebarTranslateX.value = withSpring(shouldOpen ? sidebarOpenDistance : 0, {
+            ...SIDEBAR_SPRING,
+            velocity: event.velocityX,
+          });
+          runOnJS(setSidebarOpen)(shouldOpen);
+        }),
+    [
+      sidebarGestureEnabled,
+      sidebarGestureStartTranslateX,
+      sidebarOpenDistance,
+      sidebarOpenValue,
+      sidebarTranslateX,
+    ],
   );
+
+  const sidebarMainStyle = useAnimatedStyle(() => {
+    const progress = sidebarOpenDistance > 0 ? sidebarTranslateX.value / sidebarOpenDistance : 0;
+
+    return {
+      borderTopLeftRadius: interpolate(progress, [0, 1], [0, 52]),
+      borderBottomLeftRadius: interpolate(progress, [0, 1], [0, 52]),
+      shadowOpacity: interpolate(progress, [0, 1], [0, 0.34]),
+      transform: [
+        { translateX: sidebarTranslateX.value },
+        { scale: interpolate(progress, [0, 1], [1, 0.985]) },
+      ],
+    };
+  }, [sidebarOpenDistance]);
+
+  const sidebarUnderlayStyle = useAnimatedStyle(() => {
+    const progress = sidebarOpenDistance > 0 ? sidebarTranslateX.value / sidebarOpenDistance : 0;
+
+    return {
+      opacity: interpolate(progress, [0, 0.18, 1], [0.1, 0.62, 1]),
+      transform: [{ translateX: interpolate(progress, [0, 1], [-28, 0]) }],
+    };
+  }, [sidebarOpenDistance]);
+
+  useEffect(() => {
+    if (sidebarOpenValue.value) {
+      sidebarTranslateX.value = withSpring(sidebarOpenDistance, SIDEBAR_SPRING);
+    }
+  }, [sidebarOpenDistance, sidebarOpenValue, sidebarTranslateX]);
 
   useEffect(() => {
     async function loadConnection() {
@@ -627,7 +716,7 @@ export default function HomeScreen() {
 
   async function resetConnection() {
     await AsyncStorage.removeItem(STORAGE_KEY);
-    setSidebarOpen(false);
+    closeSidebar();
     setConnection(null);
     setCommand('');
     setError('');
@@ -735,114 +824,14 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.screen}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.keyboard}>
-        <View style={styles.chatShell} {...sidebarPanResponder.panHandlers}>
-          <Pressable
-            accessibilityLabel="Open sidebar"
-            onPress={() => setSidebarOpen(true)}
-            style={({ pressed }) => [styles.sidebarButton, pressed && styles.pressed]}>
-            <View style={styles.sidebarGlyph}>
-              <View style={styles.sidebarGlyphLine} />
-              <View style={[styles.sidebarGlyphLine, styles.sidebarGlyphLineShort]} />
-            </View>
-          </Pressable>
-
-          <ScrollView
-            ref={scrollRef}
-            contentContainerStyle={styles.messagesContent}
-            keyboardShouldPersistTaps="handled"
-            style={styles.messages}>
-            {messages.map((message) => (
-              <View
-                key={message.id}
-                style={[
-                  styles.messageRow,
-                  message.role === 'user' && styles.userMessageRow,
-                  message.role === 'system' && styles.systemMessageRow,
-                ]}>
-                {message.role === 'assistant' ? (
-                  <Text style={styles.assistantMark}>C</Text>
-                ) : null}
-                <View
-                  style={[
-                    styles.message,
-                    message.role === 'user' && styles.userMessage,
-                    message.role === 'system' && styles.systemMessage,
-                  ]}>
-                  {message.role === 'assistant' && message.activity?.length ? (
-                    <Pressable
-                      onPress={() => setSelectedActivityMessageId(message.id)}
-                      style={({ pressed }) => [styles.activityLine, pressed && styles.activityLinePressed]}>
-                      <View style={styles.activityLineTextWrap}>
-                        <Text numberOfLines={1} style={styles.activityLineTitle}>
-                          {activityStatusText(message)}
-                        </Text>
-                      </View>
-                    </Pressable>
-                  ) : null}
-                  {message.text ? (
-                    <Text
-                      style={[
-                        styles.messageText,
-                        message.role === 'assistant' &&
-                          Boolean(message.activity?.length) &&
-                          styles.assistantResponseText,
-                        message.role === 'user' && styles.userMessageText,
-                        message.role === 'system' && styles.systemMessageText,
-                      ]}>
-                      {message.text}
-                    </Text>
-                  ) : null}
-                </View>
-              </View>
-            ))}
-          </ScrollView>
-
-          {error ? <Text style={styles.chatError}>{error}</Text> : null}
-
-          <View style={styles.composerWrap}>
-            <GlassSurface
-              interactive
-              isDark={isDark}
-              style={[styles.composer, composerFocused && styles.composerFocused]}
-              tintColor={colors.glassTint}>
-              <TextInput
-                multiline
-                onBlur={() => setComposerFocused(false)}
-                onChangeText={setCommand}
-                onFocus={() => setComposerFocused(true)}
-                onSubmitEditing={Platform.OS === 'web' ? sendCommand : undefined}
-                placeholder="Ask Compoota"
-                placeholderTextColor={colors.placeholder}
-                style={styles.commandInput}
-                value={command}
-              />
-              <Pressable
-                disabled={busy}
-                onPress={sendCommand}
-                style={({ pressed }) => [
-                  styles.sendButton,
-                  (pressed || busy) && styles.pressed,
-                ]}>
-                {busy ? (
-                  <Text style={styles.busyText}>...</Text>
-                ) : (
-                  <Text style={styles.sendIcon}>↑</Text>
-                )}
-              </Pressable>
-            </GlassSurface>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-      <Modal
-        animationType="fade"
-        onRequestClose={() => setSidebarOpen(false)}
-        transparent
-        visible={sidebarOpen}>
-        <View style={styles.sidebarModalRoot}>
-          <Pressable style={styles.sidebarScrim} onPress={() => setSidebarOpen(false)} />
+      <View style={styles.sidebarStage}>
+        <Animated.View
+          pointerEvents={sidebarOpen ? 'auto' : 'none'}
+          style={[
+            styles.sidebarUnderlay,
+            { width: sidebarOpenDistance },
+            sidebarUnderlayStyle,
+          ]}>
           <View style={styles.sidebarPanel}>
             <View style={styles.sidebarTop}>
               <Text style={styles.sidebarTitle}>compoota</Text>
@@ -859,8 +848,124 @@ export default function HomeScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
-      </Modal>
+        </Animated.View>
+
+        <GestureDetector gesture={sidebarPanGesture}>
+          <Animated.View style={[styles.mainPanel, sidebarMainStyle]}>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              style={styles.keyboard}>
+              <View style={styles.chatShell}>
+                <Pressable
+                  accessibilityLabel="Open sidebar"
+                  onPress={openSidebar}
+                  style={({ pressed }) => [styles.sidebarButton, pressed && styles.pressed]}>
+                  <View style={styles.sidebarGlyph}>
+                    <View style={styles.sidebarGlyphLine} />
+                    <View style={[styles.sidebarGlyphLine, styles.sidebarGlyphLineShort]} />
+                  </View>
+                </Pressable>
+
+                <ScrollView
+                  ref={scrollRef}
+                  contentContainerStyle={styles.messagesContent}
+                  keyboardShouldPersistTaps="handled"
+                  style={styles.messages}>
+                  {messages.map((message) => (
+                    <View
+                      key={message.id}
+                      style={[
+                        styles.messageRow,
+                        message.role === 'user' && styles.userMessageRow,
+                        message.role === 'system' && styles.systemMessageRow,
+                      ]}>
+                      {message.role === 'assistant' ? (
+                        <Text style={styles.assistantMark}>C</Text>
+                      ) : null}
+                      <View
+                        style={[
+                          styles.message,
+                          message.role === 'user' && styles.userMessage,
+                          message.role === 'system' && styles.systemMessage,
+                        ]}>
+                        {message.role === 'assistant' && message.activity?.length ? (
+                          <Pressable
+                            onPress={() => setSelectedActivityMessageId(message.id)}
+                            style={({ pressed }) => [
+                              styles.activityLine,
+                              pressed && styles.activityLinePressed,
+                            ]}>
+                            <View style={styles.activityLineTextWrap}>
+                              <Text numberOfLines={1} style={styles.activityLineTitle}>
+                                {activityStatusText(message)}
+                              </Text>
+                            </View>
+                          </Pressable>
+                        ) : null}
+                        {message.text ? (
+                          <Text
+                            style={[
+                              styles.messageText,
+                              message.role === 'assistant' &&
+                                Boolean(message.activity?.length) &&
+                                styles.assistantResponseText,
+                              message.role === 'user' && styles.userMessageText,
+                              message.role === 'system' && styles.systemMessageText,
+                            ]}>
+                            {message.text}
+                          </Text>
+                        ) : null}
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+
+                {error ? <Text style={styles.chatError}>{error}</Text> : null}
+
+                <View style={styles.composerWrap}>
+                  <GlassSurface
+                    interactive
+                    isDark={isDark}
+                    style={[styles.composer, composerFocused && styles.composerFocused]}
+                    tintColor={colors.glassTint}>
+                    <TextInput
+                      multiline
+                      onBlur={() => setComposerFocused(false)}
+                      onChangeText={setCommand}
+                      onFocus={() => setComposerFocused(true)}
+                      onSubmitEditing={Platform.OS === 'web' ? sendCommand : undefined}
+                      placeholder="Ask Compoota"
+                      placeholderTextColor={colors.placeholder}
+                      style={styles.commandInput}
+                      value={command}
+                    />
+                    <Pressable
+                      disabled={busy}
+                      onPress={sendCommand}
+                      style={({ pressed }) => [
+                        styles.sendButton,
+                        (pressed || busy) && styles.pressed,
+                      ]}>
+                      {busy ? (
+                        <Text style={styles.busyText}>...</Text>
+                      ) : (
+                        <Text style={styles.sendIcon}>↑</Text>
+                      )}
+                    </Pressable>
+                  </GlassSurface>
+                </View>
+              </View>
+            </KeyboardAvoidingView>
+            {sidebarOpen ? (
+              <Pressable
+                accessibilityLabel="Close sidebar"
+                onPress={closeSidebar}
+                style={styles.sidebarCloseCatcher}
+              />
+            ) : null}
+          </Animated.View>
+        </GestureDetector>
+      </View>
       <Modal
         animationType="slide"
         onRequestClose={() => setSelectedActivityMessageId(null)}
@@ -941,6 +1046,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
     screen: {
       flex: 1,
       backgroundColor: colors.background,
+      overflow: 'hidden',
     },
     keyboard: {
       flex: 1,
@@ -1057,6 +1163,20 @@ function createStyles(isDark: boolean, bottomInset: number) {
     pressed: {
       opacity: 0.62,
     },
+    sidebarStage: {
+      flex: 1,
+      backgroundColor: isDark ? '#050505' : '#f4f2ee',
+      overflow: 'hidden',
+    },
+    mainPanel: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: colors.background,
+      overflow: 'hidden',
+      shadowColor: '#000000',
+      shadowRadius: 36,
+      shadowOffset: { width: -14, height: 0 },
+      elevation: 18,
+    },
     chatShell: {
       flex: 1,
       backgroundColor: colors.background,
@@ -1092,29 +1212,19 @@ function createStyles(isDark: boolean, bottomInset: number) {
     sidebarGlyphLineShort: {
       width: 15,
     },
-    sidebarModalRoot: {
-      flex: 1,
-      flexDirection: 'row',
-    },
-    sidebarScrim: {
-      ...StyleSheet.absoluteFillObject,
-      backgroundColor: isDark ? 'rgba(0,0,0,0.10)' : 'rgba(0,0,0,0.04)',
-    },
-    sidebarPanel: {
-      width: '82%',
-      maxWidth: 360,
-      height: '100%',
+    sidebarUnderlay: {
+      position: 'absolute',
+      top: 0,
+      bottom: 0,
+      left: 0,
       paddingTop: 64,
       paddingHorizontal: 24,
       paddingBottom: Math.max(bottomInset, 18) + 18,
+      backgroundColor: isDark ? '#050505' : '#f4f2ee',
+    },
+    sidebarPanel: {
+      flex: 1,
       justifyContent: 'space-between',
-      backgroundColor: isDark ? '#050505' : '#fbfbfa',
-      borderRightWidth: StyleSheet.hairlineWidth,
-      borderRightColor: colors.border,
-      shadowColor: '#000000',
-      shadowOpacity: 0.24,
-      shadowRadius: 28,
-      shadowOffset: { width: 12, height: 0 },
     },
     sidebarTop: {
       gap: 8,
@@ -1147,6 +1257,11 @@ function createStyles(isDark: boolean, bottomInset: number) {
       color: colors.text,
       fontSize: 16,
       fontWeight: '600',
+    },
+    sidebarCloseCatcher: {
+      ...StyleSheet.absoluteFillObject,
+      zIndex: 8,
+      backgroundColor: 'transparent',
     },
     messages: {
       flex: 1,
