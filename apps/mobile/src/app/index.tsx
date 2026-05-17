@@ -4,6 +4,7 @@ import React, { PropsWithChildren, useEffect, useMemo, useRef, useState } from '
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -40,16 +41,6 @@ type Message = {
   text: string;
   activity?: ActivityStep[];
   isStreaming?: boolean;
-};
-
-type StreamReader = {
-  read: () => Promise<{ done: boolean; value?: Uint8Array }>;
-};
-
-type StreamingResponse = Response & {
-  body?: {
-    getReader?: () => StreamReader;
-  } | null;
 };
 
 const STORAGE_KEY = 'compoota.connection.v1';
@@ -115,18 +106,51 @@ function messageHistoryKey(deviceId: string): string {
   return `${MESSAGE_HISTORY_KEY_PREFIX}${deviceId}`;
 }
 
-function activitySummary(activity: ActivityStep[]): string {
+function activitySummary(activity: ActivityStep[], includeRunning = true): string {
   if (activity.some((step) => step.status === 'error')) {
     return 'Compoota hit a snag';
   }
 
-  const running = [...activity].reverse().find((step) => step.status === 'running');
+  const running = includeRunning ? [...activity].reverse().find((step) => step.status === 'running') : undefined;
   if (running) {
     return running.label;
   }
 
-  const latest = activity[activity.length - 1];
+  const latest = [...activity].reverse().find((step) => step.status === 'done') ?? activity[activity.length - 1];
   return latest?.label ?? `${activity.length} step${activity.length === 1 ? '' : 's'} completed`;
+}
+
+function activityDuration(activity: ActivityStep[]): string | null {
+  const times = activity
+    .map((step) => (step.at ? Date.parse(step.at) : Number.NaN))
+    .filter((time) => Number.isFinite(time));
+
+  if (times.length < 2) {
+    return null;
+  }
+
+  const seconds = Math.max(1, Math.round((Math.max(...times) - Math.min(...times)) / 1000));
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+}
+
+function activityStatusText(message: Message): string {
+  const activity = message.activity ?? [];
+  if (message.isStreaming) {
+    return activitySummary(activity, true);
+  }
+
+  const duration = activityDuration(activity);
+  if (duration) {
+    return `Worked for ${duration}`;
+  }
+
+  return activitySummary(activity, false);
 }
 
 function mergeActivity(existing: ActivityStep[] = [], next: ActivityStep): ActivityStep[] {
@@ -196,6 +220,93 @@ async function fetchWithTimeout(
   }
 }
 
+function streamCommandRequest({
+  connection,
+  text,
+  onActivity,
+  onReply,
+}: {
+  connection: Connection;
+  text: string;
+  onActivity: (step: ActivityStep) => void;
+  onReply: (reply: string, activity?: ActivityStep[]) => void;
+}): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let cursor = 0;
+    let settled = false;
+    let streamBuffer = '';
+
+    function fail(error: Error) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    }
+
+    function consume(final = false) {
+      const chunk = xhr.responseText.slice(cursor);
+      cursor = xhr.responseText.length;
+      streamBuffer += chunk;
+      if (final && streamBuffer.trim()) {
+        streamBuffer += '\n\n';
+      }
+      const blocks = streamBuffer.split(/\n\n/);
+      streamBuffer = final ? '' : (blocks.pop() ?? '');
+
+      for (const block of blocks) {
+        const parsed = parseSseBlock(block);
+        if (!parsed) {
+          continue;
+        }
+
+        if (parsed.event === 'activity') {
+          onActivity(parsed.data as ActivityStep);
+        } else if (parsed.event === 'reply') {
+          const data = parsed.data as { reply?: string; activity?: ActivityStep[] };
+          onReply(data.reply || '', Array.isArray(data.activity) ? data.activity : undefined);
+        } else if (parsed.event === 'error') {
+          fail(new Error('Command failed.'));
+        }
+      }
+    }
+
+    xhr.open('POST', `${connection.serverUrl}/command/stream`);
+    xhr.timeout = 180000;
+    xhr.setRequestHeader('Authorization', `Bearer ${connection.deviceToken}`);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState === 3) {
+        consume();
+      }
+    };
+    xhr.onload = () => {
+      consume(true);
+
+      if (settled) {
+        return;
+      }
+
+      if (xhr.status === 401) {
+        fail(new Error('This device is unauthorized or revoked. Reset and pair again.'));
+        return;
+      }
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        fail(new Error(`Command failed with status ${xhr.status}.`));
+        return;
+      }
+
+      settled = true;
+      resolve();
+    };
+    xhr.onerror = () => fail(new Error('Server unreachable. Check the URL and LAN connection.'));
+    xhr.ontimeout = () => fail(new Error('Compoota is taking too long to respond. Try again in a moment.'));
+    xhr.send(JSON.stringify({ text }));
+  });
+}
+
 function GlassSurface({
   children,
   style,
@@ -242,7 +353,9 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [checkingServer, setCheckingServer] = useState(false);
-  const [expandedActivity, setExpandedActivity] = useState<Record<string, boolean>>({});
+  const [selectedActivityMessageId, setSelectedActivityMessageId] = useState<string | null>(null);
+
+  const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId);
 
   useEffect(() => {
     async function loadConnection() {
@@ -413,7 +526,6 @@ export default function HomeScreen() {
     setBusy(true);
     setCommand('');
     const assistantId = messageId();
-    setExpandedActivity((current) => ({ ...current, [assistantId]: false }));
     setMessages((current) => [
       ...current,
       { id: messageId(), role: 'user', text },
@@ -433,70 +545,24 @@ export default function HomeScreen() {
     }
 
     try {
-      const response = await fetchWithTimeout(
-        `${connection.serverUrl}/command/stream`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${connection.deviceToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ text }),
+      await streamCommandRequest({
+        connection,
+        text,
+        onActivity: (step) => {
+          updateAssistant((message) => ({
+            ...message,
+            activity: mergeActivity(message.activity, step),
+          }));
         },
-        180000,
-      );
-
-      if (response.status === 401) {
-        throw new Error('This device is unauthorized or revoked. Reset and pair again.');
-      }
-
-      if (!response.ok) {
-        throw new Error(await readError(response));
-      }
-
-      const reader = (response as StreamingResponse).body?.getReader?.();
-      if (!reader) {
-        throw new Error('This device cannot read the progress stream yet.');
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const blocks = buffer.split(/\n\n/);
-        buffer = blocks.pop() ?? '';
-
-        for (const block of blocks) {
-          const parsed = parseSseBlock(block);
-          if (!parsed) {
-            continue;
-          }
-
-          if (parsed.event === 'activity') {
-            const step = parsed.data as ActivityStep;
-            updateAssistant((message) => ({
-              ...message,
-              activity: mergeActivity(message.activity, step),
-            }));
-          } else if (parsed.event === 'reply') {
-            const data = parsed.data as { reply?: string; activity?: ActivityStep[] };
-            updateAssistant((message) => ({
-              ...message,
-              text: data.reply || '',
-              activity: Array.isArray(data.activity) ? data.activity : message.activity,
-              isStreaming: false,
-            }));
-          } else if (parsed.event === 'error') {
-            throw new Error('Command failed.');
-          }
-        }
-      }
+        onReply: (reply, activity) => {
+          updateAssistant((message) => ({
+            ...message,
+            text: reply,
+            activity: activity ?? message.activity,
+            isStreaming: false,
+          }));
+        },
+      });
 
       updateAssistant((message) => ({ ...message, isStreaming: false }));
     } catch (err) {
@@ -672,63 +738,40 @@ export default function HomeScreen() {
                     message.role === 'user' && styles.userMessage,
                     message.role === 'system' && styles.systemMessage,
                   ]}>
+                  {message.role === 'assistant' && message.activity?.length ? (
+                    <Pressable
+                      onPress={() => setSelectedActivityMessageId(message.id)}
+                      style={({ pressed }) => [styles.activityLine, pressed && styles.activityLinePressed]}>
+                      <View
+                        style={[
+                          styles.activityLineDot,
+                          message.isStreaming && styles.activityLineDotRunning,
+                          message.activity.some((step) => step.status === 'error') && styles.activityLineDotError,
+                        ]}
+                      />
+                      <View style={styles.activityLineTextWrap}>
+                        <Text numberOfLines={1} style={styles.activityLineTitle}>
+                          {activityStatusText(message)}
+                        </Text>
+                        <Text numberOfLines={1} style={styles.activityLineSubtitle}>
+                          {message.isStreaming ? 'Live progress' : activitySummary(message.activity, false)}
+                        </Text>
+                      </View>
+                      <Text style={styles.activityLineChevron}>›</Text>
+                    </Pressable>
+                  ) : null}
                   {message.text ? (
                     <Text
                       style={[
                         styles.messageText,
+                        message.role === 'assistant' &&
+                          Boolean(message.activity?.length) &&
+                          styles.assistantResponseText,
                         message.role === 'user' && styles.userMessageText,
                         message.role === 'system' && styles.systemMessageText,
                       ]}>
                       {message.text}
                     </Text>
-                  ) : null}
-                  {message.activity?.length ? (
-                    <Pressable
-                      onPress={() =>
-                        setExpandedActivity((current) => ({
-                          ...current,
-                          [message.id]: !current[message.id],
-                        }))
-                      }
-                      style={styles.activityCard}>
-                      <View style={styles.activityHeader}>
-                        <View style={styles.activityTitleWrap}>
-                          {message.isStreaming ? (
-                            <ActivityIndicator color={colors.secondaryText} size="small" />
-                          ) : null}
-                          <Text style={styles.activityTitle}>{activitySummary(message.activity)}</Text>
-                        </View>
-                        <Text style={styles.activityToggle}>{expandedActivity[message.id] ? 'Hide' : 'Show'}</Text>
-                      </View>
-                      {expandedActivity[message.id] ? (
-                        <View style={styles.activityList}>
-                          {message.activity.map((step, index) => (
-                            <View
-                              key={step.id}
-                              style={[
-                                styles.activityStep,
-                                step.status === 'done' &&
-                                  index < (message.activity?.length ?? 0) - 1 &&
-                                  styles.activityStepFaded,
-                              ]}>
-                              <View
-                                style={[
-                                  styles.activityDot,
-                                  step.status === 'error' && styles.activityDotError,
-                                  step.status === 'running' && styles.activityDotRunning,
-                                ]}
-                              />
-                              <View style={styles.activityTextWrap}>
-                                <Text style={styles.activityStepLabel}>{step.label}</Text>
-                                {step.detail ? (
-                                  <Text style={styles.activityStepDetail}>{step.detail}</Text>
-                                ) : null}
-                              </View>
-                            </View>
-                          ))}
-                        </View>
-                      ) : null}
-                    </Pressable>
                   ) : null}
                 </View>
               </View>
@@ -765,6 +808,55 @@ export default function HomeScreen() {
           </View>
         </View>
       </KeyboardAvoidingView>
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setSelectedActivityMessageId(null)}
+        transparent
+        visible={Boolean(selectedActivityMessage?.activity?.length)}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setSelectedActivityMessageId(null)} />
+          <View style={styles.sheet}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <View>
+                <Text style={styles.sheetTitle}>Compoota’s work</Text>
+                <Text style={styles.sheetSubtitle}>
+                  {selectedActivityMessage ? activityStatusText(selectedActivityMessage) : ''}
+                </Text>
+              </View>
+              <Pressable onPress={() => setSelectedActivityMessageId(null)} style={styles.sheetClose}>
+                <Text style={styles.sheetCloseText}>Done</Text>
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.sheetSteps} showsVerticalScrollIndicator={false}>
+              {selectedActivityMessage?.activity?.map((step, index) => (
+                <View
+                  key={`${step.id}-${index}`}
+                  style={[
+                    styles.sheetStep,
+                    step.status === 'done' &&
+                      index < (selectedActivityMessage.activity?.length ?? 0) - 1 &&
+                      styles.sheetStepQuiet,
+                  ]}>
+                  <View
+                    style={[
+                      styles.sheetStepDot,
+                      selectedActivityMessage?.isStreaming &&
+                        step.status === 'running' &&
+                        styles.sheetStepDotRunning,
+                      step.status === 'error' && styles.sheetStepDotError,
+                    ]}
+                  />
+                  <View style={styles.sheetStepText}>
+                    <Text style={styles.sheetStepLabel}>{step.label}</Text>
+                    {step.detail ? <Text style={styles.sheetStepDetail}>{step.detail}</Text> : null}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -821,7 +913,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
     brand: {
       color: colors.subtleText,
       fontSize: 13,
-      fontWeight: '800',
+      fontWeight: '700',
       letterSpacing: 0,
       textTransform: 'uppercase',
     },
@@ -829,7 +921,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
       color: colors.text,
       fontSize: 42,
       lineHeight: 46,
-      fontWeight: '800',
+      fontWeight: '700',
       letterSpacing: 0,
       maxWidth: 360,
     },
@@ -858,7 +950,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
     label: {
       color: colors.secondaryText,
       fontSize: 13,
-      fontWeight: '700',
+      fontWeight: '600',
     },
     input: {
       minHeight: 50,
@@ -893,7 +985,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
     connectButtonText: {
       color: colors.actionText,
       fontSize: 16,
-      fontWeight: '800',
+      fontWeight: '700',
     },
     testButton: {
       height: 50,
@@ -907,7 +999,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
     testButtonText: {
       color: colors.text,
       fontSize: 15,
-      fontWeight: '700',
+      fontWeight: '600',
     },
     pressed: {
       opacity: 0.62,
@@ -949,7 +1041,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
     resetButtonText: {
       color: colors.text,
       fontSize: 13,
-      fontWeight: '700',
+      fontWeight: '600',
     },
     headerTitleWrap: {
       alignItems: 'flex-start',
@@ -959,7 +1051,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
     chatTitle: {
       color: colors.text,
       fontSize: 17,
-      fontWeight: '800',
+      fontWeight: '700',
       letterSpacing: 0,
     },
     chatSubtitle: {
@@ -1001,7 +1093,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
       color: colors.actionText,
       backgroundColor: colors.action,
       fontSize: 13,
-      fontWeight: '800',
+      fontWeight: '700',
       marginTop: 2,
     },
     message: {
@@ -1023,125 +1115,61 @@ function createStyles(isDark: boolean, bottomInset: number) {
       paddingVertical: 9,
       backgroundColor: isDark ? 'rgba(217,61,61,0.14)' : 'rgba(217,61,61,0.08)',
     },
-    thinkingBubble: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 9,
-      borderRadius: 18,
-      paddingHorizontal: 14,
-      paddingVertical: 10,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)',
-    },
-    thinkingText: {
-      color: colors.secondaryText,
-      fontSize: 15,
-      lineHeight: 20,
-      fontWeight: '600',
-    },
-    activityCard: {
-      marginTop: 12,
-      borderRadius: 16,
-      paddingHorizontal: 12,
-      paddingVertical: 10,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    activityHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: 12,
-    },
-    activityTitleWrap: {
-      flex: 1,
+    activityLine: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 8,
+      alignSelf: 'flex-start',
+      maxWidth: '94%',
+      paddingVertical: 3,
+      marginBottom: 8,
     },
-    activityTitle: {
-      flex: 1,
-      color: colors.secondaryText,
-      fontSize: 13,
-      fontWeight: '700',
-      lineHeight: 18,
+    activityLinePressed: {
+      opacity: 0.58,
     },
-    activityToggle: {
-      color: colors.text,
-      fontSize: 12,
-      fontWeight: '800',
-    },
-    activityList: {
-      gap: 10,
-      marginTop: 12,
-    },
-    activityStep: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: 10,
-    },
-    activityStepFaded: {
+    activityLineDot: {
+      width: 5,
+      height: 5,
+      borderRadius: 2.5,
+      backgroundColor: colors.secondaryText,
       opacity: 0.48,
     },
-    activityDot: {
-      width: 8,
-      height: 8,
-      borderRadius: 4,
-      marginTop: 6,
-      backgroundColor: isDark ? '#f6f6f4' : '#171717',
-      opacity: 0.46,
-    },
-    activityDotRunning: {
+    activityLineDotRunning: {
       opacity: 1,
       backgroundColor: '#147ef5',
     },
-    activityDotError: {
+    activityLineDotError: {
       opacity: 1,
       backgroundColor: colors.error,
     },
-    activityTextWrap: {
-      flex: 1,
-      gap: 2,
-    },
-    activityStepLabel: {
-      color: colors.text,
-      fontSize: 13,
-      lineHeight: 18,
-      fontWeight: '700',
-    },
-    activityStepDetail: {
-      color: colors.secondaryText,
-      fontSize: 12,
-      lineHeight: 17,
-    },
-    pendingActivityPanel: {
+    activityLineTextWrap: {
       flexShrink: 1,
-      gap: 8,
-      maxWidth: '86%',
+      gap: 1,
     },
-    pendingActivityWrap: {
-      gap: 7,
-      paddingHorizontal: 14,
-      paddingVertical: 11,
-      borderRadius: 18,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.035)',
-    },
-    pendingStep: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: 9,
-    },
-    pendingStepText: {
-      flex: 1,
+    activityLineTitle: {
       color: colors.secondaryText,
       fontSize: 13,
-      lineHeight: 18,
+      lineHeight: 17,
       fontWeight: '600',
+    },
+    activityLineSubtitle: {
+      color: colors.subtleText,
+      fontSize: 11,
+      lineHeight: 14,
+    },
+    activityLineChevron: {
+      color: colors.subtleText,
+      fontSize: 18,
+      lineHeight: 18,
+      marginLeft: 2,
     },
     messageText: {
       color: colors.text,
       fontSize: 17,
       lineHeight: 25,
+    },
+    assistantResponseText: {
+      marginTop: 2,
     },
     userMessageText: {
       color: colors.userText,
@@ -1162,6 +1190,112 @@ function createStyles(isDark: boolean, bottomInset: number) {
       textAlign: 'center',
       fontSize: 13,
       zIndex: 2,
+    },
+    modalRoot: {
+      flex: 1,
+      justifyContent: 'flex-end',
+    },
+    modalBackdrop: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: isDark ? 'rgba(0,0,0,0.54)' : 'rgba(0,0,0,0.22)',
+    },
+    sheet: {
+      maxHeight: '74%',
+      borderTopLeftRadius: 28,
+      borderTopRightRadius: 28,
+      paddingTop: 10,
+      paddingHorizontal: 22,
+      paddingBottom: Math.max(bottomInset, 16) + 18,
+      backgroundColor: colors.background,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      shadowColor,
+      shadowOpacity: 0.22,
+      shadowRadius: 30,
+      shadowOffset: { width: 0, height: -12 },
+    },
+    sheetHandle: {
+      width: 42,
+      height: 5,
+      borderRadius: 3,
+      alignSelf: 'center',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.14)',
+      marginBottom: 18,
+    },
+    sheetHeader: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      justifyContent: 'space-between',
+      gap: 18,
+      marginBottom: 18,
+    },
+    sheetTitle: {
+      color: colors.text,
+      fontSize: 21,
+      lineHeight: 26,
+      fontWeight: '700',
+    },
+    sheetSubtitle: {
+      color: colors.secondaryText,
+      fontSize: 13,
+      lineHeight: 18,
+      marginTop: 2,
+    },
+    sheetClose: {
+      minWidth: 64,
+      height: 36,
+      borderRadius: 18,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    },
+    sheetCloseText: {
+      color: colors.text,
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    sheetSteps: {
+      gap: 16,
+      paddingBottom: 8,
+    },
+    sheetStep: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: 12,
+    },
+    sheetStepQuiet: {
+      opacity: 0.46,
+    },
+    sheetStepDot: {
+      width: 7,
+      height: 7,
+      borderRadius: 3.5,
+      marginTop: 7,
+      backgroundColor: colors.secondaryText,
+      opacity: 0.72,
+    },
+    sheetStepDotRunning: {
+      opacity: 1,
+      backgroundColor: '#147ef5',
+    },
+    sheetStepDotError: {
+      opacity: 1,
+      backgroundColor: colors.error,
+    },
+    sheetStepText: {
+      flex: 1,
+      gap: 3,
+    },
+    sheetStepLabel: {
+      color: colors.text,
+      fontSize: 15,
+      lineHeight: 21,
+      fontWeight: '600',
+    },
+    sheetStepDetail: {
+      color: colors.secondaryText,
+      fontSize: 13,
+      lineHeight: 18,
     },
     composerWrap: {
       position: 'absolute',
