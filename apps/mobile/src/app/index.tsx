@@ -5,14 +5,17 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  StyleProp,
   Text,
   TextInput,
   useColorScheme,
   View,
+  ViewStyle,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -150,7 +153,7 @@ function activityStatusText(message: Message): string {
     return `Worked for ${duration}`;
   }
 
-  return activitySummary(activity, false);
+  return activity.some((step) => step.status === 'error') ? 'Compoota hit a snag' : 'Worked just now';
 }
 
 function mergeActivity(existing: ActivityStep[] = [], next: ActivityStep): ActivityStep[] {
@@ -309,11 +312,13 @@ function streamCommandRequest({
 
 function GlassSurface({
   children,
+  interactive = false,
   style,
   tintColor,
   isDark,
 }: PropsWithChildren<{
-  style?: object;
+  interactive?: boolean;
+  style?: StyleProp<ViewStyle>;
   tintColor: string;
   isDark: boolean;
 }>) {
@@ -324,7 +329,7 @@ function GlassSurface({
       <GlassView
         colorScheme={isDark ? 'dark' : 'light'}
         glassEffectStyle="regular"
-        isInteractive={false}
+        isInteractive={interactive}
         style={style}
         tintColor={tintColor}>
         {children}
@@ -354,8 +359,37 @@ export default function HomeScreen() {
   const [busy, setBusy] = useState(false);
   const [checkingServer, setCheckingServer] = useState(false);
   const [selectedActivityMessageId, setSelectedActivityMessageId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false);
 
   const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId);
+  const sidebarServerHost = useMemo(() => {
+    if (!connection) {
+      return '';
+    }
+
+    try {
+      return new URL(connection.serverUrl).host;
+    } catch {
+      return connection.serverUrl;
+    }
+  }, [connection]);
+  const sidebarPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (event, gesture) =>
+          !sidebarOpen &&
+          event.nativeEvent.pageX < 28 &&
+          gesture.dx > 12 &&
+          Math.abs(gesture.dy) < 36,
+        onPanResponderRelease: (_event, gesture) => {
+          if (gesture.dx > 44) {
+            setSidebarOpen(true);
+          }
+        },
+      }),
+    [sidebarOpen],
+  );
 
   useEffect(() => {
     async function loadConnection() {
@@ -593,6 +627,7 @@ export default function HomeScreen() {
 
   async function resetConnection() {
     await AsyncStorage.removeItem(STORAGE_KEY);
+    setSidebarOpen(false);
     setConnection(null);
     setCommand('');
     setError('');
@@ -703,18 +738,16 @@ export default function HomeScreen() {
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.keyboard}>
-        <View style={styles.chatShell}>
-          <GlassSurface isDark={isDark} style={styles.chatHeader} tintColor={colors.glassTint}>
-            <View style={styles.headerTitleWrap}>
-              <Text style={styles.chatTitle}>Compoota</Text>
-              <Text numberOfLines={1} style={styles.chatSubtitle}>
-                {connection.serverUrl}
-              </Text>
+        <View style={styles.chatShell} {...sidebarPanResponder.panHandlers}>
+          <Pressable
+            accessibilityLabel="Open sidebar"
+            onPress={() => setSidebarOpen(true)}
+            style={({ pressed }) => [styles.sidebarButton, pressed && styles.pressed]}>
+            <View style={styles.sidebarGlyph}>
+              <View style={styles.sidebarGlyphLine} />
+              <View style={[styles.sidebarGlyphLine, styles.sidebarGlyphLineShort]} />
             </View>
-            <Pressable onPress={resetConnection} style={styles.resetButton}>
-              <Text style={styles.resetButtonText}>Reset</Text>
-            </Pressable>
-          </GlassSurface>
+          </Pressable>
 
           <ScrollView
             ref={scrollRef}
@@ -742,22 +775,11 @@ export default function HomeScreen() {
                     <Pressable
                       onPress={() => setSelectedActivityMessageId(message.id)}
                       style={({ pressed }) => [styles.activityLine, pressed && styles.activityLinePressed]}>
-                      <View
-                        style={[
-                          styles.activityLineDot,
-                          message.isStreaming && styles.activityLineDotRunning,
-                          message.activity.some((step) => step.status === 'error') && styles.activityLineDotError,
-                        ]}
-                      />
                       <View style={styles.activityLineTextWrap}>
                         <Text numberOfLines={1} style={styles.activityLineTitle}>
                           {activityStatusText(message)}
                         </Text>
-                        <Text numberOfLines={1} style={styles.activityLineSubtitle}>
-                          {message.isStreaming ? 'Live progress' : activitySummary(message.activity, false)}
-                        </Text>
                       </View>
-                      <Text style={styles.activityLineChevron}>›</Text>
                     </Pressable>
                   ) : null}
                   {message.text ? (
@@ -781,10 +803,16 @@ export default function HomeScreen() {
           {error ? <Text style={styles.chatError}>{error}</Text> : null}
 
           <View style={styles.composerWrap}>
-            <GlassSurface isDark={isDark} style={styles.composer} tintColor={colors.glassTint}>
+            <GlassSurface
+              interactive
+              isDark={isDark}
+              style={[styles.composer, composerFocused && styles.composerFocused]}
+              tintColor={colors.glassTint}>
               <TextInput
                 multiline
+                onBlur={() => setComposerFocused(false)}
                 onChangeText={setCommand}
+                onFocus={() => setComposerFocused(true)}
                 onSubmitEditing={Platform.OS === 'web' ? sendCommand : undefined}
                 placeholder="Ask Compoota"
                 placeholderTextColor={colors.placeholder}
@@ -808,6 +836,31 @@ export default function HomeScreen() {
           </View>
         </View>
       </KeyboardAvoidingView>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setSidebarOpen(false)}
+        transparent
+        visible={sidebarOpen}>
+        <View style={styles.sidebarModalRoot}>
+          <Pressable style={styles.sidebarScrim} onPress={() => setSidebarOpen(false)} />
+          <View style={styles.sidebarPanel}>
+            <View style={styles.sidebarTop}>
+              <Text style={styles.sidebarTitle}>compoota</Text>
+              <Text numberOfLines={1} style={styles.sidebarMeta}>
+                {sidebarServerHost ? `connected to ${sidebarServerHost}` : 'local companion'}
+              </Text>
+            </View>
+
+            <View style={styles.sidebarFooter}>
+              <Pressable
+                onPress={resetConnection}
+                style={({ pressed }) => [styles.sidebarLogout, pressed && styles.pressed]}>
+                <Text style={styles.sidebarLogoutText}>logout</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
       <Modal
         animationType="slide"
         onRequestClose={() => setSelectedActivityMessageId(null)}
@@ -1008,66 +1061,101 @@ function createStyles(isDark: boolean, bottomInset: number) {
       flex: 1,
       backgroundColor: colors.background,
     },
-    chatHeader: {
+    sidebarButton: {
       position: 'absolute',
-      top: 10,
+      top: 8,
       left: 18,
-      right: 18,
       zIndex: 3,
-      height: 58,
-      borderRadius: 29,
-      overflow: 'hidden',
-      flexDirection: 'row',
+      width: 52,
+      height: 52,
+      borderRadius: 26,
       alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: 18,
-      backgroundColor: colors.elevated,
+      justifyContent: 'center',
+      backgroundColor: isDark ? 'rgba(33,33,33,0.74)' : 'rgba(255,255,255,0.74)',
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
       shadowColor,
-      shadowOpacity: 0.16,
-      shadowRadius: 20,
-      shadowOffset: { width: 0, height: 12 },
+      shadowOpacity: 0.14,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 10 },
     },
-    resetButton: {
-      minWidth: 58,
-      height: 38,
-      borderRadius: 19,
-      alignItems: 'center',
-      justifyContent: 'center',
-      paddingHorizontal: 12,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    sidebarGlyph: {
+      width: 22,
+      gap: 7,
     },
-    resetButtonText: {
-      color: colors.text,
-      fontSize: 13,
-      fontWeight: '600',
+    sidebarGlyphLine: {
+      width: 22,
+      height: 2.5,
+      borderRadius: 2,
+      backgroundColor: colors.text,
     },
-    headerTitleWrap: {
-      alignItems: 'flex-start',
+    sidebarGlyphLineShort: {
+      width: 15,
+    },
+    sidebarModalRoot: {
       flex: 1,
-      paddingRight: 12,
+      flexDirection: 'row',
     },
-    chatTitle: {
+    sidebarScrim: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: isDark ? 'rgba(0,0,0,0.10)' : 'rgba(0,0,0,0.04)',
+    },
+    sidebarPanel: {
+      width: '82%',
+      maxWidth: 360,
+      height: '100%',
+      paddingTop: 64,
+      paddingHorizontal: 24,
+      paddingBottom: Math.max(bottomInset, 18) + 18,
+      justifyContent: 'space-between',
+      backgroundColor: isDark ? '#050505' : '#fbfbfa',
+      borderRightWidth: StyleSheet.hairlineWidth,
+      borderRightColor: colors.border,
+      shadowColor: '#000000',
+      shadowOpacity: 0.24,
+      shadowRadius: 28,
+      shadowOffset: { width: 12, height: 0 },
+    },
+    sidebarTop: {
+      gap: 8,
+    },
+    sidebarTitle: {
       color: colors.text,
-      fontSize: 17,
+      fontSize: 34,
+      lineHeight: 40,
       fontWeight: '700',
       letterSpacing: 0,
     },
-    chatSubtitle: {
-      color: colors.secondaryText,
-      fontSize: 11,
-      maxWidth: 210,
-      marginTop: 1,
+    sidebarMeta: {
+      color: colors.subtleText,
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    sidebarFooter: {
+      gap: 12,
+    },
+    sidebarLogout: {
+      height: 50,
+      borderRadius: 25,
+      paddingHorizontal: 18,
+      alignItems: 'center',
+      justifyContent: 'center',
+      alignSelf: 'flex-start',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.06)',
+    },
+    sidebarLogoutText: {
+      color: colors.text,
+      fontSize: 16,
+      fontWeight: '600',
     },
     messages: {
       flex: 1,
     },
     messagesContent: {
-      paddingTop: 92,
+      paddingTop: 84,
       paddingHorizontal: 20,
       paddingBottom: 118 + Math.max(bottomInset, 10),
-      gap: 20,
+      gap: 24,
     },
     messageRow: {
       flexDirection: 'row',
@@ -1118,50 +1206,22 @@ function createStyles(isDark: boolean, bottomInset: number) {
     activityLine: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 8,
       alignSelf: 'flex-start',
       maxWidth: '94%',
-      paddingVertical: 3,
-      marginBottom: 8,
+      paddingVertical: 2,
+      marginBottom: 7,
     },
     activityLinePressed: {
       opacity: 0.58,
     },
-    activityLineDot: {
-      width: 5,
-      height: 5,
-      borderRadius: 2.5,
-      backgroundColor: colors.secondaryText,
-      opacity: 0.48,
-    },
-    activityLineDotRunning: {
-      opacity: 1,
-      backgroundColor: '#147ef5',
-    },
-    activityLineDotError: {
-      opacity: 1,
-      backgroundColor: colors.error,
-    },
     activityLineTextWrap: {
       flexShrink: 1,
-      gap: 1,
     },
     activityLineTitle: {
-      color: colors.secondaryText,
-      fontSize: 13,
-      lineHeight: 17,
-      fontWeight: '600',
-    },
-    activityLineSubtitle: {
       color: colors.subtleText,
-      fontSize: 11,
-      lineHeight: 14,
-    },
-    activityLineChevron: {
-      color: colors.subtleText,
-      fontSize: 18,
-      lineHeight: 18,
-      marginLeft: 2,
+      fontSize: 12,
+      lineHeight: 16,
+      fontWeight: '500',
     },
     messageText: {
       color: colors.text,
@@ -1197,7 +1257,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
     },
     modalBackdrop: {
       ...StyleSheet.absoluteFillObject,
-      backgroundColor: isDark ? 'rgba(0,0,0,0.54)' : 'rgba(0,0,0,0.22)',
+      backgroundColor: isDark ? 'rgba(0,0,0,0.06)' : 'rgba(0,0,0,0.03)',
     },
     sheet: {
       maxHeight: '74%',
@@ -1206,13 +1266,13 @@ function createStyles(isDark: boolean, bottomInset: number) {
       paddingTop: 10,
       paddingHorizontal: 22,
       paddingBottom: Math.max(bottomInset, 16) + 18,
-      backgroundColor: colors.background,
+      backgroundColor: isDark ? '#171717' : '#fbfbfa',
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
       shadowColor,
-      shadowOpacity: 0.22,
-      shadowRadius: 30,
-      shadowOffset: { width: 0, height: -12 },
+      shadowOpacity: 0.18,
+      shadowRadius: 24,
+      shadowOffset: { width: 0, height: -8 },
     },
     sheetHandle: {
       width: 42,
@@ -1322,6 +1382,12 @@ function createStyles(isDark: boolean, bottomInset: number) {
       shadowRadius: 28,
       shadowOffset: { width: 0, height: 16 },
     },
+    composerFocused: {
+      borderColor: isDark ? 'rgba(255,255,255,0.28)' : 'rgba(20,20,20,0.18)',
+      shadowOpacity: 0.24,
+      shadowRadius: 32,
+      transform: [{ scale: 1.006 }],
+    },
     commandInput: {
       flex: 1,
       minHeight: 46,
@@ -1333,19 +1399,21 @@ function createStyles(isDark: boolean, bottomInset: number) {
       lineHeight: 24,
     },
     sendButton: {
-      width: 46,
-      height: 46,
-      borderRadius: 23,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
       backgroundColor: colors.action,
       alignItems: 'center',
       justifyContent: 'center',
     },
     sendIcon: {
       color: colors.actionText,
-      fontSize: 26,
-      fontWeight: '900',
-      lineHeight: 28,
-      marginTop: -2,
+      width: 44,
+      height: 44,
+      fontSize: 30,
+      fontWeight: '800',
+      lineHeight: 41,
+      textAlign: 'center',
     },
     busyText: {
       color: colors.actionText,
