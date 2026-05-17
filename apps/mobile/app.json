@@ -1,19 +1,21 @@
 {
   "expo": {
-    "name": "mobile",
-    "slug": "mobile",
+    "name": "Compoota",
+    "slug": "compoota",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "mobile",
+    "scheme": "compoota",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon",
+      "icon": "./assets/images/icon.png",
+      "bundleIdentifier": "com.neb.compoota",
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Compoota connects to your local house-server on your LAN.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
-        }
+        },
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -45,6 +47,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "959d1eef-ff69-4992-aae8-8ef3340bede6"
+      }
+    },
+    "owner": "neb_b"
   }
 }
