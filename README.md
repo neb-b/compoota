@@ -94,7 +94,9 @@ Optional live progress from the local agent:
 mkdir -p ~/.hermes/plugins
 cp -R plugins/compoota-progress ~/.hermes/plugins/compoota-progress
 # add compoota-progress to plugins.enabled in ~/.hermes/config.yaml
-systemctl --user restart compoota-house.service
+# set HERMES_COMMAND_MODE=oneshot, HERMES_HOST_DIR=/home/neb/.hermes,
+# and UV_PYTHON_HOST_DIR=/home/neb/.local/share/uv in .env
+docker compose --profile tunnel up -d --build
 ```
 
 ## Mobile app setup
