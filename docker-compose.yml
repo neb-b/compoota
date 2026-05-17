@@ -10,5 +10,14 @@ services:
     volumes:
       - house-data:/data
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles:
+      - tunnel
+    depends_on:
+      - house-server
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+
 volumes:
   house-data:

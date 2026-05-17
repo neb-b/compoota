@@ -4,6 +4,8 @@ export type Config = {
   houseSetupSecret: string;
   pairingCodeTtlMinutes: number;
   tokenHashSecret: string;
+  publicBaseUrl: string | null;
+  allowedOrigins: string[];
   hermesCommandMode: "mock" | "oneshot";
   hermesWorkingDirectory: string;
   hermesPythonPath: string;
@@ -33,6 +35,27 @@ function readString(name: string, fallback: string): string {
   return value;
 }
 
+function readOptionalString(name: string): string | null {
+  const value = process.env[name];
+  if (!value?.trim()) {
+    return null;
+  }
+
+  return value.trim();
+}
+
+function readStringList(name: string): string[] {
+  const value = process.env[name];
+  if (!value?.trim()) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 export function loadConfig(): Config {
   const hermesCommandMode = readString("HERMES_COMMAND_MODE", "mock");
   if (hermesCommandMode !== "mock" && hermesCommandMode !== "oneshot") {
@@ -45,6 +68,8 @@ export function loadConfig(): Config {
     houseSetupSecret: readString("HOUSE_SETUP_SECRET", "change-this-long-random-string"),
     pairingCodeTtlMinutes: readNumber("PAIRING_CODE_TTL_MINUTES", 10),
     tokenHashSecret: readString("TOKEN_HASH_SECRET", "change-this-too"),
+    publicBaseUrl: readOptionalString("PUBLIC_BASE_URL"),
+    allowedOrigins: readStringList("ALLOWED_ORIGINS"),
     hermesCommandMode,
     hermesWorkingDirectory: readString("HERMES_WORKING_DIRECTORY", "/home/neb/.hermes/hermes-agent"),
     hermesPythonPath: readString(

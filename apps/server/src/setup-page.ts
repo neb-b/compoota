@@ -1,4 +1,16 @@
-export function setupPageHtml(): string {
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+export function setupPageHtml(publicBaseUrl: string | null): string {
+  const publicUrlHtml = publicBaseUrl
+    ? `<p class="muted">Public URL: <code>${escapeHtml(publicBaseUrl)}</code></p>`
+    : "";
+
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -20,12 +32,14 @@ export function setupPageHtml(): string {
       .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
       .code { font-size: 28px; font-weight: 800; letter-spacing: 4px; }
       .muted { color: #687184; font-size: 14px; }
+      code { background: #eef1f6; border-radius: 4px; padding: 2px 5px; }
       .device { display: flex; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid #edf0f4; }
       .error { color: #b91c1c; }
       @media (prefers-color-scheme: dark) {
         body { background: #101218; color: #f3f5f9; }
         section { background: #191d26; border-color: #303747; }
         input { background: #101218; border-color: #3c4558; color: #f3f5f9; }
+        code { background: #252b38; }
         p, .muted { color: #aeb7c8; }
         .device { border-color: #2b3242; }
       }
@@ -35,6 +49,7 @@ export function setupPageHtml(): string {
     <main>
       <h1>Compoota Setup</h1>
       <p>Create pairing codes and manage registered devices on your LAN.</p>
+      ${publicUrlHtml}
 
       <section>
         <label for="secret">Setup secret</label>

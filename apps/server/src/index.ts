@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type Database from "better-sqlite3";
@@ -77,10 +78,12 @@ function errorMessage(error: unknown): string {
 
 function createServer(config: Config, db: Database.Database) {
   const app = Fastify({
-    logger: true
+    logger: true,
+    bodyLimit: 16 * 1024
   });
 
-  app.register(cors, { origin: true });
+  app.register(cors, { origin: config.allowedOrigins.length > 0 ? config.allowedOrigins : true });
+  app.register(rateLimit, { global: false });
 
   app.setErrorHandler((error: unknown, _request, reply) => {
     const statusCode = errorStatusCode(error);
@@ -94,13 +97,20 @@ function createServer(config: Config, db: Database.Database) {
     reply.status(statusCode).send({ error: errorMessage(error) });
   });
 
-  app.get("/health", async () => ({ ok: true }));
+  app.get("/health", async () => ({ ok: true, mode: "house-server" }));
 
   app.get("/setup", async (_request, reply) => {
-    reply.type("text/html").send(setupPageHtml());
+    reply.type("text/html").send(setupPageHtml(config.publicBaseUrl));
   });
 
-  app.post("/setup/pairing-code", async (request) => {
+  app.post("/setup/pairing-code", {
+    config: {
+      rateLimit: {
+        max: 5,
+        timeWindow: "10 minutes"
+      }
+    }
+  }, async (request) => {
     verifySetupSecret(request, config);
 
     const pairingCode = createPairingCode();
@@ -148,7 +158,14 @@ function createServer(config: Config, db: Database.Database) {
     return { ok: true };
   });
 
-  app.post("/pair", async (request, reply) => {
+  app.post("/pair", {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: "10 minutes"
+      }
+    }
+  }, async (request, reply) => {
     const body = validateBody(pairSchema, request.body);
     const codeHash = hashSecret(body.pairingCode, config.tokenHashSecret);
     const pairingCode = db
@@ -192,7 +209,14 @@ function createServer(config: Config, db: Database.Database) {
     };
   });
 
-  app.post("/command", async (request) => {
+  app.post("/command", {
+    config: {
+      rateLimit: {
+        max: 60,
+        timeWindow: "1 minute"
+      }
+    }
+  }, async (request) => {
     const device = verifyDeviceToken(request, db, config);
     const body = validateBody(commandSchema, request.body);
     const createdAt = nowIso();
@@ -219,7 +243,14 @@ function createServer(config: Config, db: Database.Database) {
     };
   });
 
-  app.post("/command/stream", async (request, reply) => {
+  app.post("/command/stream", {
+    config: {
+      rateLimit: {
+        max: 30,
+        timeWindow: "1 minute"
+      }
+    }
+  }, async (request, reply) => {
     const device = verifyDeviceToken(request, db, config);
     const body = validateBody(commandSchema, request.body);
     const createdAt = nowIso();

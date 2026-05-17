@@ -14,6 +14,7 @@ The local agent is not exposed publicly.
 - Pairing-code device registration
 - Long-lived device tokens
 - Docker Compose deployment for 64-bit Raspberry Pi OS
+- Optional Cloudflare Tunnel remote access
 
 ## Local development
 
@@ -41,6 +42,8 @@ open http://localhost:8787/setup
 
 ## Raspberry Pi deployment
 
+LAN-only mode:
+
 ```sh
 ssh pi@PI_IP
 git clone repo
@@ -50,10 +53,39 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Then open:
+Use this server URL in the mobile app:
+
+```txt
+http://PI_IP:8787
+```
+
+Open setup on your LAN:
 
 ```txt
 http://PI_IP:8787/setup
+```
+
+Remote access with Cloudflare Tunnel:
+
+```sh
+cp .env.example .env
+# edit .env:
+# CLOUDFLARE_TUNNEL_TOKEN=...
+# PUBLIC_BASE_URL=https://hermes.compoota.com
+# ALLOWED_ORIGINS=https://hermes.compoota.com
+docker compose --profile tunnel up -d --build
+```
+
+In Cloudflare Tunnel, route the public hostname to the Compose service:
+
+```txt
+hermes.compoota.com -> http://house-server:8787
+```
+
+Use this server URL in the mobile app:
+
+```txt
+https://hermes.compoota.com
 ```
 
 Optional live progress from the local agent:
@@ -76,6 +108,7 @@ npx expo start
 Create a pairing code from the setup page, then enter:
 
 - Server URL, for example `http://192.168.1.50:8787`
+- Or remote Server URL, for example `https://hermes.compoota.com`
 - Pairing code
 - Device name
 
@@ -87,12 +120,13 @@ Setup endpoints require `Authorization: Bearer <HOUSE_SETUP_SECRET>`. Command en
 
 Pairing codes expire and are single-use. Devices can be revoked from `/setup`.
 
-CORS is permissive for LAN development in this version. This is not production-grade multi-user auth.
+Cloudflare Tunnel gives HTTPS public reachability without router port forwarding. Only `house-server` is exposed; the local agent is not exposed directly. Setup actions still require `HOUSE_SETUP_SECRET`, and app commands require a paired device token.
+
+CORS is permissive for LAN development when `ALLOWED_ORIGINS` is empty. Set `ALLOWED_ORIGINS` to the public HTTPS origin for remote mode. This is self-hosted auth, not enterprise auth.
 
 ## Not included yet
 
-- Cloudflare Tunnel or remote access
-- OAuth, accounts, or hosted auth providers
+- Cloudflare Access, OAuth, accounts, or hosted auth providers
 - Home Assistant integration
 - MCP
 - Push notifications or reminders
