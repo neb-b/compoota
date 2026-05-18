@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Compoota",
+    "name": "compoota",
     "slug": "compoota",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -11,7 +11,7 @@
       "icon": "./assets/images/icon.png",
       "bundleIdentifier": "com.neb.compoota",
       "infoPlist": {
-        "NSLocalNetworkUsageDescription": "Compoota connects to your local house-server on your LAN.",
+        "NSLocalNetworkUsageDescription": "compoota connects to your local house-server on your LAN.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         },
@@ -36,10 +36,14 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#405871",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 393,
+          "resizeMode": "cover",
           "android": {
             "image": "./assets/images/splash-icon.png",
-            "imageWidth": 76
+            "imageWidth": 393,
+            "resizeMode": "cover"
           }
         }
       ]

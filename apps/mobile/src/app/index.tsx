@@ -1,6 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect';
-import React, { PropsWithChildren, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -9,13 +8,11 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  StyleProp,
   Text,
   TextInput,
   useColorScheme,
   useWindowDimensions,
   View,
-  ViewStyle,
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -79,7 +76,7 @@ const PENDING_ACTIVITY: ActivityStep[] = [
   {
     id: 'compoota.agent.start.pending',
     label: 'Handing it to the local agent',
-    detail: 'Compoota is nudging the house brain.',
+    detail: 'compoota is passing the request along.',
     status: 'running',
   },
 ];
@@ -123,7 +120,7 @@ function messageHistoryKey(deviceId: string): string {
 
 function activitySummary(activity: ActivityStep[], includeRunning = true): string {
   if (activity.some((step) => step.status === 'error')) {
-    return 'Compoota hit a snag';
+    return 'compoota hit a snag';
   }
 
   const running = includeRunning ? [...activity].reverse().find((step) => step.status === 'running') : undefined;
@@ -165,7 +162,7 @@ function activityStatusText(message: Message): string {
     return `Worked for ${duration}`;
   }
 
-  return activity.some((step) => step.status === 'error') ? 'Compoota hit a snag' : 'Worked just now';
+  return activity.some((step) => step.status === 'error') ? 'compoota hit a snag' : 'Worked just now';
 }
 
 function mergeActivity(existing: ActivityStep[] = [], next: ActivityStep): ActivityStep[] {
@@ -317,39 +314,9 @@ function streamCommandRequest({
       resolve();
     };
     xhr.onerror = () => fail(new Error('Server unreachable. Check the URL and LAN connection.'));
-    xhr.ontimeout = () => fail(new Error('Compoota is taking too long to respond. Try again in a moment.'));
+    xhr.ontimeout = () => fail(new Error('compoota is taking too long to respond. Try again in a moment.'));
     xhr.send(JSON.stringify({ text }));
   });
-}
-
-function GlassSurface({
-  children,
-  interactive = false,
-  style,
-  tintColor,
-  isDark,
-}: PropsWithChildren<{
-  interactive?: boolean;
-  style?: StyleProp<ViewStyle>;
-  tintColor: string;
-  isDark: boolean;
-}>) {
-  const canUseGlass = Platform.OS === 'ios' && isGlassEffectAPIAvailable();
-
-  if (canUseGlass) {
-    return (
-      <GlassView
-        colorScheme={isDark ? 'dark' : 'light'}
-        glassEffectStyle="regular"
-        isInteractive={interactive}
-        style={style}
-        tintColor={tintColor}>
-        {children}
-      </GlassView>
-    );
-  }
-
-  return <View style={style}>{children}</View>;
 }
 
 export default function HomeScreen() {
@@ -371,7 +338,6 @@ export default function HomeScreen() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [checkingServer, setCheckingServer] = useState(false);
   const [selectedActivityMessageId, setSelectedActivityMessageId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
@@ -545,7 +511,7 @@ export default function HomeScreen() {
       const cleanedCode = pairingCode.trim();
       const cleanedName =
         deviceName.trim() ||
-        Platform.select({ ios: 'iPhone', android: 'Android', default: 'Compoota device' });
+        Platform.select({ ios: 'iPhone', android: 'Android', default: 'compoota device' });
 
       if (!/^\d{6}$/.test(cleanedCode)) {
         throw new Error('Enter the 6-digit pairing code from the setup page.');
@@ -608,35 +574,6 @@ export default function HomeScreen() {
     }
   }
 
-  async function testServer() {
-    setError('');
-    setCheckingServer(true);
-
-    try {
-      const normalizedUrl = normalizeServerUrl(serverUrl);
-      const response = await fetchWithTimeout(`${normalizedUrl}/health`, { method: 'GET' }, 6000);
-
-      if (!response.ok) {
-        throw new Error(`Server health check failed with status ${response.status}.`);
-      }
-
-      setServerUrl(normalizedUrl);
-      setError('Server is reachable. Use a fresh pairing code to connect.');
-    } catch (err) {
-      const message =
-        err instanceof TypeError
-          ? 'Server unreachable from this device. Check the URL, Wi-Fi, or tunnel.'
-          : err instanceof Error && err.name === 'AbortError'
-            ? 'Server did not respond from this device. Check the URL and network.'
-            : err instanceof Error
-              ? err.message
-              : 'Server check failed.';
-      setError(message);
-    } finally {
-      setCheckingServer(false);
-    }
-  }
-
   async function sendCommand() {
     if (!connection || busy) {
       return;
@@ -696,7 +633,7 @@ export default function HomeScreen() {
         err instanceof TypeError
           ? 'Server unreachable. Check the URL and network connection.'
           : err instanceof Error && err.name === 'AbortError'
-            ? 'Compoota is taking too long to respond. Try again in a moment.'
+            ? 'compoota is taking too long to respond. Try again in a moment.'
           : err instanceof Error
             ? err.message
             : 'Command failed.';
@@ -742,16 +679,15 @@ export default function HomeScreen() {
           style={styles.keyboard}>
           <View style={styles.connectPage}>
             <View style={styles.connectContent}>
-              <Text style={styles.brand}>Compoota</Text>
-              <Text style={styles.connectTitle}>Connect your local companion</Text>
+              <Text style={styles.connectTitle}>compoota</Text>
               <Text style={styles.connectCopy}>
-                Pair this phone with the house-server on your LAN. The house brain stays private.
+                enter your server url and a fresh pairing code from the pi.
               </Text>
             </View>
 
-            <GlassSurface isDark={isDark} style={styles.connectCard} tintColor={colors.glassTint}>
+            <View style={styles.connectForm}>
               <View style={styles.field}>
-                <Text style={styles.label}>Server URL</Text>
+                <Text style={styles.label}>server url</Text>
                 <TextInput
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -765,7 +701,7 @@ export default function HomeScreen() {
               </View>
 
               <View style={styles.field}>
-                <Text style={styles.label}>Pairing code</Text>
+                <Text style={styles.label}>pairing code</Text>
                 <TextInput
                   keyboardType="number-pad"
                   maxLength={6}
@@ -778,7 +714,7 @@ export default function HomeScreen() {
               </View>
 
               <View style={styles.field}>
-                <Text style={styles.label}>Device name</Text>
+                <Text style={styles.label}>your name</Text>
                 <TextInput
                   onChangeText={setDeviceName}
                   placeholder="Sean iPhone"
@@ -792,7 +728,7 @@ export default function HomeScreen() {
 
               <View style={styles.connectActions}>
                 <Pressable
-                  disabled={busy || checkingServer}
+                  disabled={busy}
                   onPress={connect}
                   style={({ pressed }) => [
                     styles.connectButton,
@@ -801,24 +737,11 @@ export default function HomeScreen() {
                   {busy ? (
                     <ActivityIndicator color={colors.actionText} />
                   ) : (
-                    <Text style={styles.connectButtonText}>Connect</Text>
-                  )}
-                </Pressable>
-                <Pressable
-                  disabled={busy || checkingServer}
-                  onPress={testServer}
-                  style={({ pressed }) => [
-                    styles.testButton,
-                    (pressed || checkingServer) && styles.pressed,
-                  ]}>
-                  {checkingServer ? (
-                    <ActivityIndicator color={colors.text} />
-                  ) : (
-                    <Text style={styles.testButtonText}>Test server</Text>
+                    <Text style={styles.connectButtonText}>connect</Text>
                   )}
                 </Pressable>
               </View>
-            </GlassSurface>
+            </View>
           </View>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -974,7 +897,7 @@ export default function HomeScreen() {
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHeader}>
               <View>
-                <Text style={styles.sheetTitle}>Compoota’s work</Text>
+                <Text style={styles.sheetTitle}>compoota’s work</Text>
                 <Text style={styles.sheetSubtitle}>
                   {selectedActivityMessage ? activityStatusText(selectedActivityMessage) : ''}
                 </Text>
@@ -1023,8 +946,6 @@ function createColors(isDark: boolean) {
     secondaryText: isDark ? '#a7a7a2' : '#686863',
     subtleText: isDark ? '#858580' : '#8f8f88',
     border: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(12,12,12,0.08)',
-    elevated: isDark ? 'rgba(32,32,31,0.84)' : 'rgba(255,255,255,0.82)',
-    glassTint: isDark ? 'rgba(38,38,36,0.64)' : 'rgba(255,255,255,0.72)',
     input: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.92)',
     placeholder: isDark ? '#8d8d88' : '#9a9a94',
     selection: isDark ? '#ffffff' : '#111111',
@@ -1057,30 +978,21 @@ function createStyles(isDark: boolean, bottomInset: number) {
     },
     connectPage: {
       flex: 1,
-      paddingHorizontal: 22,
+      justifyContent: 'center',
+      paddingHorizontal: 24,
       paddingTop: 24,
       paddingBottom: Math.max(bottomInset, 16) + 8,
     },
     connectContent: {
-      flex: 1,
-      justifyContent: 'center',
       gap: 10,
-      paddingBottom: 16,
-    },
-    brand: {
-      color: colors.subtleText,
-      fontSize: 13,
-      fontWeight: '700',
-      letterSpacing: 0,
-      textTransform: 'uppercase',
+      paddingBottom: 34,
     },
     connectTitle: {
       color: colors.text,
-      fontSize: 42,
-      lineHeight: 46,
-      fontWeight: '700',
+      fontFamily: 'OcclusionGrotesqueYear3',
+      fontSize: 68,
+      lineHeight: 72,
       letterSpacing: 0,
-      maxWidth: 360,
     },
     connectCopy: {
       color: colors.secondaryText,
@@ -1088,18 +1000,8 @@ function createStyles(isDark: boolean, bottomInset: number) {
       lineHeight: 24,
       maxWidth: 340,
     },
-    connectCard: {
+    connectForm: {
       gap: 14,
-      borderRadius: 30,
-      padding: 18,
-      overflow: 'hidden',
-      backgroundColor: colors.elevated,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-      shadowColor,
-      shadowOpacity: 0.16,
-      shadowRadius: 26,
-      shadowOffset: { width: 0, height: 18 },
     },
     field: {
       gap: 8,
@@ -1143,20 +1045,6 @@ function createStyles(isDark: boolean, bottomInset: number) {
       color: colors.actionText,
       fontSize: 16,
       fontWeight: '700',
-    },
-    testButton: {
-      height: 50,
-      borderRadius: 25,
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
-    },
-    testButtonText: {
-      color: colors.text,
-      fontSize: 15,
-      fontWeight: '600',
     },
     pressed: {
       opacity: 0.62,

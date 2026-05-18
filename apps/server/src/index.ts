@@ -296,7 +296,7 @@ function createServer(config: Config, db: Database.Database) {
       sendSse(reply, "done", { ok: true });
     } catch (error) {
       app.log.error(error);
-      const failed = commandActivity("compoota.server.error", "Compoota hit a snag", undefined);
+      const failed = commandActivity("compoota.server.error", "compoota hit a snag", undefined);
       failed.status = "error";
       emit(failed);
       sendSse(reply, "error", { error: "Command failed" });

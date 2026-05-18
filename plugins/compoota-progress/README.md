@@ -1,6 +1,6 @@
-# Compoota Progress Plugin
+# compoota progress plugin
 
-Small Hermes plugin that lets the Compoota house-server show live progress in
+Small Hermes plugin that lets the compoota house-server show live progress in
 the mobile chat.
 
 The plugin listens to Hermes lifecycle hooks and writes JSONL events to the
@@ -9,7 +9,7 @@ command run and streams the events to the app.
 
 ## Install On A Pi
 
-From the Compoota repo:
+From the compoota repo:
 
 ```sh
 mkdir -p ~/.hermes/plugins
@@ -30,5 +30,5 @@ Restart the house-server after installing:
 docker compose --profile tunnel up -d --build
 ```
 
-The plugin is intentionally optional. If it is not installed, Compoota still
+The plugin is intentionally optional. If it is not installed, compoota still
 shows server-level progress and the final reply.

@@ -1,8 +1,8 @@
-# Compoota
+# compoota
 
 ## What this is
 
-Compoota is a small companion stack for a local house agent running on a Raspberry Pi. The mobile app talks only to the house-server on your LAN. The house-server can run in mock mode for setup, or call the private local agent when configured on the Pi.
+compoota is a small companion stack for a local house agent running on a Raspberry Pi. The mobile app talks only to the house-server on your LAN. The house-server can run in mock mode for setup, or call the private local agent when configured on the Pi.
 
 The local agent is not exposed publicly.
 
@@ -135,7 +135,7 @@ Then enter:
 - Server URL, for example `http://192.168.1.50:8787`
 - Or remote Server URL, for example `https://your-house.example.com`
 - Pairing code
-- Device name
+- Your name
 
 After pairing, the app saves the server URL, device ID, and device token locally.
 

@@ -130,7 +130,7 @@ export async function runHermesCommand(
   if (config.hermesCommandMode === "mock") {
     emit(activity("compoota.mock", "Used the local mock responder", "Private agent calls are disabled in this config."));
     return {
-      reply: `Mock Compoota heard: ${text}`,
+      reply: `mock compoota heard: ${text}`,
       activity: commandActivity
     };
   }
@@ -217,7 +217,7 @@ export async function runHermesCommand(
 
     const reply = Buffer.concat(stdoutChunks).toString("utf8").trim();
     return {
-      reply: reply || "Compoota finished without a text response.",
+      reply: reply || "compoota finished without a text response.",
       activity: commandActivity
     };
   } catch (error) {

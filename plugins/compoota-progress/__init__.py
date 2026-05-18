@@ -1,6 +1,6 @@
-"""Compoota progress bridge for Hermes.
+"""compoota progress bridge for Hermes.
 
-Hermes loads this as a normal plugin. During a Compoota request the
+Hermes loads this as a normal plugin. During a compoota request the
 house-server sets COMPOOTA_PROGRESS_FILE and COMPOOTA_RUN_ID. The plugin
 observes Hermes lifecycle hooks and appends compact JSONL events for the
 house-server to stream to the mobile app.

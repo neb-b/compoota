@@ -16,7 +16,7 @@ export function setupPageHtml(publicBaseUrl: string | null): string {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Compoota Setup</title>
+    <title>compoota setup</title>
     <style>
       :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       body { margin: 0; background: #f6f7f9; color: #14171f; }
@@ -47,7 +47,7 @@ export function setupPageHtml(publicBaseUrl: string | null): string {
   </head>
   <body>
     <main>
-      <h1>Compoota Setup</h1>
+      <h1>compoota setup</h1>
       <p>Create pairing codes and manage registered devices on your LAN.</p>
       ${publicUrlHtml}
 
