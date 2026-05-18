@@ -116,20 +116,13 @@ Create a pairing code from the setup page, then enter:
 
 After pairing, the app saves the server URL, device ID, and device token locally.
 
-You can also ask the running server to create a pairing code:
+You can also ask the running server to create a pairing code from the repo root:
 
 ```sh
-cd apps/server
-npm run pairing-code
+./create-pairing-code.sh
 ```
 
-In Docker, run the same request from inside the server container:
-
-```sh
-docker compose exec house-server npm run pairing-code:prod
-```
-
-The direct database script is available as `npm run pairing-code:db`, but use it only when you are sure it points at the same SQLite file as the running server.
+The script reads `.env` and calls the running server API, so it does not write directly to SQLite.
 
 ## Security model
 

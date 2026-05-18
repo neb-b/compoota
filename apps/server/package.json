@@ -7,9 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "pairing-code": "tsx src/request-pairing-code.ts",
     "pairing-code:db": "tsx src/create-pairing-code.ts",
-    "pairing-code:prod": "node dist/request-pairing-code.js",
     "pairing-code:db:prod": "node dist/create-pairing-code.js",
     "typecheck": "tsc --noEmit"
   },
