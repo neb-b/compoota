@@ -681,7 +681,7 @@ export default function HomeScreen() {
             <View style={styles.connectContent}>
               <Text style={styles.connectTitle}>compoota</Text>
               <Text style={styles.connectCopy}>
-                enter your server url and a fresh pairing code from the pi.
+                enter your server url and a fresh pairing code from your pi
               </Text>
             </View>
 
@@ -990,8 +990,8 @@ function createStyles(isDark: boolean, bottomInset: number) {
     connectTitle: {
       color: colors.text,
       fontFamily: 'OcclusionGrotesqueYear3',
-      fontSize: 68,
-      lineHeight: 72,
+      fontSize: 52,
+      lineHeight: 56,
       letterSpacing: 0,
     },
     connectCopy: {
