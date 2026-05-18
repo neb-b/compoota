@@ -138,7 +138,7 @@ export async function runHermesCommand(
   const envPath = [
     `${config.hermesWorkingDirectory}/venv/bin`,
     `${config.hermesWorkingDirectory}/node_modules/.bin`,
-    "/home/neb/.hermes/node/bin",
+    `${config.hermesHome}/node/bin`,
     process.env.PATH ?? ""
   ]
     .filter(Boolean)
@@ -178,7 +178,7 @@ export async function runHermesCommand(
         COMPOOTA_PROGRESS_FILE: progressFile,
         COMPOOTA_RUN_ID: runId,
         HERMES_ENABLE_PROJECT_PLUGINS: process.env.HERMES_ENABLE_PROJECT_PLUGINS ?? "1",
-        HERMES_HOME: "/home/neb/.hermes",
+        HERMES_HOME: config.hermesHome,
         HERMES_YOLO_MODE: "1",
         HERMES_ACCEPT_HOOKS: "1",
         PATH: envPath,

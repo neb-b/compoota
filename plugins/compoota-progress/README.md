@@ -27,7 +27,7 @@ plugins:
 Restart the house-server after installing:
 
 ```sh
-systemctl --user restart compoota-house.service
+docker compose --profile tunnel up -d --build
 ```
 
 The plugin is intentionally optional. If it is not installed, Compoota still

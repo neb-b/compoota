@@ -9,8 +9,8 @@ services:
       - .env
     volumes:
       - house-data:/data
-      - ${HERMES_HOST_DIR:-/home/neb/.hermes}:/home/neb/.hermes
-      - ${UV_PYTHON_HOST_DIR:-/home/neb/.local/share/uv}:/home/neb/.local/share/uv
+      - ${HERMES_HOST_DIR:-/home/pi/.hermes}:${HERMES_CONTAINER_DIR:-/home/pi/.hermes}
+      - ${UV_PYTHON_HOST_DIR:-/home/pi/.local/share/uv}:${UV_PYTHON_CONTAINER_DIR:-/home/pi/.local/share/uv}
 
   cloudflared:
     image: cloudflare/cloudflared:latest

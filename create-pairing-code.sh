@@ -19,7 +19,7 @@ if [[ -z "${HOUSE_SETUP_SECRET:-}" ]]; then
   exit 1
 fi
 
-server_url="${PAIRING_CODE_SERVER_URL:-${PUBLIC_BASE_URL:-http://127.0.0.1:${PORT:-8787}}}"
+server_url="${PAIRING_CODE_SERVER_URL:-http://127.0.0.1:${PORT:-8787}}"
 server_url="${server_url%/}"
 
 if ! command -v curl >/dev/null 2>&1; then

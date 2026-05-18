@@ -7,6 +7,7 @@ export type Config = {
   publicBaseUrl: string | null;
   allowedOrigins: string[];
   hermesCommandMode: "mock" | "oneshot";
+  hermesHome: string;
   hermesWorkingDirectory: string;
   hermesPythonPath: string;
   hermesTimeoutSeconds: number;
@@ -71,10 +72,11 @@ export function loadConfig(): Config {
     publicBaseUrl: readOptionalString("PUBLIC_BASE_URL"),
     allowedOrigins: readStringList("ALLOWED_ORIGINS"),
     hermesCommandMode,
-    hermesWorkingDirectory: readString("HERMES_WORKING_DIRECTORY", "/home/neb/.hermes/hermes-agent"),
+    hermesHome: readString("HERMES_HOME", "/home/pi/.hermes"),
+    hermesWorkingDirectory: readString("HERMES_WORKING_DIRECTORY", "/home/pi/.hermes/hermes-agent"),
     hermesPythonPath: readString(
       "HERMES_PYTHON_PATH",
-      "/home/neb/.hermes/hermes-agent/venv/bin/python"
+      "/home/pi/.hermes/hermes-agent/venv/bin/python"
     ),
     hermesTimeoutSeconds: readNumber("HERMES_TIMEOUT_SECONDS", 120)
   };

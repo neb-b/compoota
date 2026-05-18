@@ -48,7 +48,7 @@ type ActivityStep = {
 
 type Message = {
   id: string;
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant';
   text: string;
   activity?: ActivityStep[];
   isStreaming?: boolean;
@@ -63,18 +63,6 @@ const SIDEBAR_SPRING = {
   damping: 28,
   mass: 0.9,
   stiffness: 240,
-};
-
-const CONNECT_MESSAGE: Message = {
-  id: 'welcome',
-  role: 'assistant',
-  text: '',
-};
-
-const READY_MESSAGE: Message = {
-  id: 'ready',
-  role: 'assistant',
-  text: '',
 };
 
 const PENDING_ACTIVITY: ActivityStep[] = [
@@ -98,7 +86,16 @@ const PENDING_ACTIVITY: ActivityStep[] = [
 
 function normalizeServerUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, '');
-  const url = new URL(trimmed);
+  if (!trimmed) {
+    throw new Error('Enter the house-server URL.');
+  }
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error('Enter a valid http:// or https:// server URL.');
+  }
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('Use an http:// or https:// server URL.');
@@ -214,7 +211,7 @@ function parseMessages(value: string | null): Message[] | null {
       message &&
       typeof message.id === 'string' &&
       typeof message.text === 'string' &&
-      (message.role === 'user' || message.role === 'assistant' || message.role === 'system'),
+      (message.role === 'user' || message.role === 'assistant'),
   ).map((message) => ({
     ...message,
     activity: Array.isArray(message.activity) ? message.activity : undefined,
@@ -366,11 +363,11 @@ export default function HomeScreen() {
   const sidebarOpenDistance = Math.min(screenWidth * 0.76, 340);
 
   const [connection, setConnection] = useState<Connection | null>(null);
-  const [serverUrl, setServerUrl] = useState('http://192.168.1.50:8787');
+  const [serverUrl, setServerUrl] = useState('');
   const [pairingCode, setPairingCode] = useState('');
   const [deviceName, setDeviceName] = useState('');
   const [command, setCommand] = useState('');
-  const [messages, setMessages] = useState<Message[]>([CONNECT_MESSAGE]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -512,7 +509,7 @@ export default function HomeScreen() {
             );
             setConnection(parsed);
             setServerUrl(parsed.serverUrl);
-            setMessages(storedMessages ?? [READY_MESSAGE]);
+            setMessages(storedMessages ?? []);
           }
         }
       } catch {
@@ -595,13 +592,13 @@ export default function HomeScreen() {
       setServerUrl(normalizedUrl);
       setPairingCode('');
       setDeviceName(cleanedName);
-      setMessages([{ ...READY_MESSAGE, id: messageId() }]);
+      setMessages([]);
     } catch (err) {
       const message =
         err instanceof TypeError
-          ? 'Server unreachable. Check the URL, Wi-Fi, and LAN connection.'
+          ? 'Server unreachable. Check the URL and network connection.'
           : err instanceof Error && err.name === 'AbortError'
-            ? 'Server did not respond. Check that the phone and Pi are on the same LAN.'
+            ? 'Server did not respond. Check that the phone can reach the Pi.'
             : err instanceof Error
               ? err.message
               : 'Pairing failed.';
@@ -628,9 +625,9 @@ export default function HomeScreen() {
     } catch (err) {
       const message =
         err instanceof TypeError
-          ? 'Server unreachable from this device. Check Expo Go Local Network permission and Wi-Fi.'
+          ? 'Server unreachable from this device. Check the URL, Wi-Fi, or tunnel.'
           : err instanceof Error && err.name === 'AbortError'
-            ? 'Server did not respond from this device. Check Expo Go Local Network permission.'
+            ? 'Server did not respond from this device. Check the URL and network.'
             : err instanceof Error
               ? err.message
               : 'Server check failed.';
@@ -697,7 +694,7 @@ export default function HomeScreen() {
     } catch (err) {
       const message =
         err instanceof TypeError
-          ? 'Server unreachable. Check the URL and LAN connection.'
+          ? 'Server unreachable. Check the URL and network connection.'
           : err instanceof Error && err.name === 'AbortError'
             ? 'Compoota is taking too long to respond. Try again in a moment.'
           : err instanceof Error
@@ -726,7 +723,7 @@ export default function HomeScreen() {
     setConnection(null);
     setCommand('');
     setError('');
-    setMessages([CONNECT_MESSAGE]);
+    setMessages([]);
   }
 
   if (loading) {
@@ -884,13 +881,11 @@ export default function HomeScreen() {
                       style={[
                         styles.messageRow,
                         message.role === 'user' && styles.userMessageRow,
-                        message.role === 'system' && styles.systemMessageRow,
                       ]}>
                       <View
                         style={[
                           styles.message,
                           message.role === 'user' && styles.userMessage,
-                          message.role === 'system' && styles.systemMessage,
                         ]}>
                         {message.role === 'assistant' && message.activity?.length ? (
                           <Pressable
@@ -914,7 +909,6 @@ export default function HomeScreen() {
                                 Boolean(message.activity?.length) &&
                                 styles.assistantResponseText,
                               message.role === 'user' && styles.userMessageText,
-                              message.role === 'system' && styles.systemMessageText,
                             ]}>
                             {message.text}
                           </Text>
@@ -1291,9 +1285,6 @@ function createStyles(isDark: boolean, bottomInset: number) {
     userMessageRow: {
       justifyContent: 'flex-end',
     },
-    systemMessageRow: {
-      justifyContent: 'center',
-    },
     message: {
       flexShrink: 1,
       maxWidth: '86%',
@@ -1305,13 +1296,6 @@ function createStyles(isDark: boolean, bottomInset: number) {
       paddingHorizontal: 16,
       paddingVertical: 11,
       backgroundColor: colors.userBubble,
-    },
-    systemMessage: {
-      maxWidth: '92%',
-      borderRadius: 18,
-      paddingHorizontal: 14,
-      paddingVertical: 9,
-      backgroundColor: isDark ? 'rgba(217,61,61,0.14)' : 'rgba(217,61,61,0.08)',
     },
     activityLine: {
       flexDirection: 'row',
@@ -1345,11 +1329,6 @@ function createStyles(isDark: boolean, bottomInset: number) {
       color: colors.userText,
       fontSize: 16,
       lineHeight: 22,
-    },
-    systemMessageText: {
-      color: colors.error,
-      fontSize: 14,
-      textAlign: 'center',
     },
     chatError: {
       position: 'absolute',

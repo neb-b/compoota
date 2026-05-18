@@ -18,7 +18,7 @@ The local agent is not exposed publicly.
 
 ## Local development
 
-Use Node.js 20 or newer for local development.
+Use Node.js 20 or newer.
 
 Server:
 
@@ -42,18 +42,22 @@ open http://localhost:8787/setup
 
 ## Raspberry Pi deployment
 
-LAN-only mode:
+Install Docker on 64-bit Raspberry Pi OS, then clone the repo on the Pi.
+
+LAN-only:
 
 ```sh
 ssh pi@PI_IP
 git clone repo
 cd compoota
 cp .env.example .env
-# edit .env and set long random secrets
+# edit .env and set HOUSE_SETUP_SECRET and TOKEN_HASH_SECRET
 docker compose up -d --build
 ```
 
-Use this server URL in the mobile app:
+If your Pi has the older standalone Compose binary, use `docker-compose` in place of `docker compose`.
+
+Use this in the app:
 
 ```txt
 http://PI_IP:8787
@@ -71,33 +75,39 @@ Remote access with Cloudflare Tunnel:
 cp .env.example .env
 # edit .env:
 # CLOUDFLARE_TUNNEL_TOKEN=...
-# PUBLIC_BASE_URL=https://hermes.compoota.com
-# ALLOWED_ORIGINS=https://hermes.compoota.com
+# PUBLIC_BASE_URL=https://your-house.example.com
+# ALLOWED_ORIGINS=https://your-house.example.com
 docker compose --profile tunnel up -d --build
 ```
 
 In Cloudflare Tunnel, route the public hostname to the Compose service:
 
 ```txt
-hermes.compoota.com -> http://house-server:8787
+your-house.example.com -> http://house-server:8787
 ```
 
-Use this server URL in the mobile app:
+Use this in the app:
 
 ```txt
-https://hermes.compoota.com
+https://your-house.example.com
 ```
 
-Optional live progress from the local agent:
+Cloudflare Tunnel does not need router port forwarding. It exposes only `house-server`; the local agent stays behind it.
+
+## Local agent progress
+
+The app works in mock mode first. To call the local agent and stream progress:
 
 ```sh
 mkdir -p ~/.hermes/plugins
 cp -R plugins/compoota-progress ~/.hermes/plugins/compoota-progress
 # add compoota-progress to plugins.enabled in ~/.hermes/config.yaml
-# set HERMES_COMMAND_MODE=oneshot, HERMES_HOST_DIR=/home/neb/.hermes,
-# and UV_PYTHON_HOST_DIR=/home/neb/.local/share/uv in .env
+# set HERMES_COMMAND_MODE=oneshot in .env
+# if your Pi user is not pi, update the *_HOST_DIR, *_CONTAINER_DIR, and HERMES_* paths
 docker compose --profile tunnel up -d --build
 ```
+
+The default `.env.example` mirrors `/home/pi/.hermes` into the container at the same path. That keeps Python virtualenvs and other absolute paths boring.
 
 ## Mobile app setup
 
@@ -107,22 +117,29 @@ npm install
 npx expo start
 ```
 
-Create a pairing code from the setup page, then enter:
+For an installable iPhone build:
 
-- Server URL, for example `http://192.168.1.50:8787`
-- Or remote Server URL, for example `https://hermes.compoota.com`
-- Pairing code
-- Device name
+```sh
+cd apps/mobile
+npx eas build --platform ios --profile preview
+```
 
-After pairing, the app saves the server URL, device ID, and device token locally.
-
-You can also ask the running server to create a pairing code from the repo root:
+Create a pairing code from the setup page or from the Pi repo root:
 
 ```sh
 ./create-pairing-code.sh
 ```
 
-The script reads `.env` and calls the running server API, so it does not write directly to SQLite.
+Then enter:
+
+- Server URL, for example `http://192.168.1.50:8787`
+- Or remote Server URL, for example `https://your-house.example.com`
+- Pairing code
+- Device name
+
+After pairing, the app saves the server URL, device ID, and device token locally.
+
+The script reads `.env` and calls the running local server API, so it does not write directly to SQLite.
 
 ## Security model
 
