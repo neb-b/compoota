@@ -58,6 +58,7 @@ const STORAGE_KEY = 'compoota.connection.v1';
 const PREFERENCES_KEY = 'compoota.connection-preferences.v1';
 const MESSAGE_HISTORY_KEY_PREFIX = 'compoota.messages.v1.';
 const SIDEBAR_EDGE_HIT_SLOP = 30;
+const SIDEBAR_LAYER_RADIUS = 58;
 const SIDEBAR_SPRING = {
   damping: 28,
   mass: 0.9,
@@ -67,13 +68,13 @@ const SIDEBAR_SPRING = {
 const CONNECT_MESSAGE: Message = {
   id: 'welcome',
   role: 'assistant',
-  text: 'Connect to your Compoota house-server, then send a command.',
+  text: '',
 };
 
 const READY_MESSAGE: Message = {
   id: 'ready',
   role: 'assistant',
-  text: 'Compoota is awake. What should we try?',
+  text: '',
 };
 
 const PENDING_ACTIVITY: ActivityStep[] = [
@@ -453,14 +454,19 @@ export default function HomeScreen() {
 
   const sidebarMainStyle = useAnimatedStyle(() => {
     const progress = sidebarOpenDistance > 0 ? sidebarTranslateX.value / sidebarOpenDistance : 0;
+    const radius = interpolate(progress, [0, 1], [0, SIDEBAR_LAYER_RADIUS]);
+    const layerScale = interpolate(progress, [0, 1], [1, 0.94]);
 
     return {
-      borderTopLeftRadius: interpolate(progress, [0, 1], [0, 52]),
-      borderBottomLeftRadius: interpolate(progress, [0, 1], [0, 52]),
+      borderTopLeftRadius: radius,
+      borderTopRightRadius: radius,
+      borderBottomLeftRadius: radius,
+      borderBottomRightRadius: radius,
+      borderWidth: interpolate(progress, [0, 1], [0, StyleSheet.hairlineWidth]),
       shadowOpacity: interpolate(progress, [0, 1], [0, 0.34]),
       transform: [
         { translateX: sidebarTranslateX.value },
-        { scale: interpolate(progress, [0, 1], [1, 0.985]) },
+        { scale: layerScale },
       ],
     };
   }, [sidebarOpenDistance]);
@@ -823,7 +829,7 @@ export default function HomeScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.screen}>
+    <View style={styles.screen}>
       <View style={styles.sidebarStage}>
         <Animated.View
           pointerEvents={sidebarOpen ? 'auto' : 'none'}
@@ -852,10 +858,11 @@ export default function HomeScreen() {
 
         <GestureDetector gesture={sidebarPanGesture}>
           <Animated.View style={[styles.mainPanel, sidebarMainStyle]}>
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-              style={styles.keyboard}>
-              <View style={styles.chatShell}>
+            <SafeAreaView style={styles.chatSafeArea}>
+              <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                style={styles.keyboard}>
+                <View style={styles.chatShell}>
                 <Pressable
                   accessibilityLabel="Open sidebar"
                   onPress={openSidebar}
@@ -871,7 +878,7 @@ export default function HomeScreen() {
                   contentContainerStyle={styles.messagesContent}
                   keyboardShouldPersistTaps="handled"
                   style={styles.messages}>
-                  {messages.map((message) => (
+                  {messages.filter((message) => message.text || message.activity?.length).map((message) => (
                     <View
                       key={message.id}
                       style={[
@@ -879,9 +886,6 @@ export default function HomeScreen() {
                         message.role === 'user' && styles.userMessageRow,
                         message.role === 'system' && styles.systemMessageRow,
                       ]}>
-                      {message.role === 'assistant' ? (
-                        <Text style={styles.assistantMark}>C</Text>
-                      ) : null}
                       <View
                         style={[
                           styles.message,
@@ -923,19 +927,17 @@ export default function HomeScreen() {
                 {error ? <Text style={styles.chatError}>{error}</Text> : null}
 
                 <View style={styles.composerWrap}>
-                  <GlassSurface
-                    interactive
-                    isDark={isDark}
-                    style={[styles.composer, composerFocused && styles.composerFocused]}
-                    tintColor={colors.glassTint}>
+                  <View style={[styles.composer, composerFocused && styles.composerFocused]}>
                     <TextInput
-                      multiline
+                      keyboardAppearance={isDark ? 'dark' : 'light'}
                       onBlur={() => setComposerFocused(false)}
                       onChangeText={setCommand}
                       onFocus={() => setComposerFocused(true)}
                       onSubmitEditing={Platform.OS === 'web' ? sendCommand : undefined}
-                      placeholder="Ask Compoota"
+                      placeholder="compoota..."
                       placeholderTextColor={colors.placeholder}
+                      returnKeyType="default"
+                      selectionColor={colors.selection}
                       style={styles.commandInput}
                       value={command}
                     />
@@ -952,10 +954,11 @@ export default function HomeScreen() {
                         <Text style={styles.sendIcon}>↑</Text>
                       )}
                     </Pressable>
-                  </GlassSurface>
+                  </View>
                 </View>
-              </View>
-            </KeyboardAvoidingView>
+                </View>
+              </KeyboardAvoidingView>
+            </SafeAreaView>
             {sidebarOpen ? (
               <Pressable
                 accessibilityLabel="Close sidebar"
@@ -1015,7 +1018,7 @@ export default function HomeScreen() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -1030,6 +1033,7 @@ function createColors(isDark: boolean) {
     glassTint: isDark ? 'rgba(38,38,36,0.64)' : 'rgba(255,255,255,0.72)',
     input: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.92)',
     placeholder: isDark ? '#8d8d88' : '#9a9a94',
+    selection: isDark ? '#ffffff' : '#111111',
     action: isDark ? '#ffffff' : '#0b0b0b',
     actionText: isDark ? '#111111' : '#ffffff',
     userBubble: isDark ? '#eeeeea' : '#161616',
@@ -1171,11 +1175,16 @@ function createStyles(isDark: boolean, bottomInset: number) {
     mainPanel: {
       ...StyleSheet.absoluteFillObject,
       backgroundColor: colors.background,
+      borderColor: isDark ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.08)',
       overflow: 'hidden',
       shadowColor: '#000000',
       shadowRadius: 36,
       shadowOffset: { width: -14, height: 0 },
       elevation: 18,
+    },
+    chatSafeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
     },
     chatShell: {
       flex: 1,
@@ -1275,7 +1284,6 @@ function createStyles(isDark: boolean, bottomInset: number) {
     messageRow: {
       flexDirection: 'row',
       alignItems: 'flex-start',
-      gap: 10,
       maxWidth: 560,
       width: '100%',
       alignSelf: 'center',
@@ -1285,19 +1293,6 @@ function createStyles(isDark: boolean, bottomInset: number) {
     },
     systemMessageRow: {
       justifyContent: 'center',
-    },
-    assistantMark: {
-      width: 28,
-      height: 28,
-      borderRadius: 14,
-      overflow: 'hidden',
-      textAlign: 'center',
-      lineHeight: 28,
-      color: colors.actionText,
-      backgroundColor: colors.action,
-      fontSize: 13,
-      fontWeight: '700',
-      marginTop: 2,
     },
     message: {
       flexShrink: 1,
@@ -1478,40 +1473,37 @@ function createStyles(isDark: boolean, bottomInset: number) {
       right: 16,
       bottom: Math.max(bottomInset, 12),
       zIndex: 4,
-    },
-    composer: {
-      minHeight: 62,
       borderRadius: 31,
-      overflow: 'hidden',
-      flexDirection: 'row',
-      alignItems: 'flex-end',
-      gap: 10,
-      paddingLeft: 18,
-      paddingRight: 8,
-      paddingVertical: 8,
-      backgroundColor: colors.elevated,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
       shadowColor,
       shadowOpacity: 0.18,
       shadowRadius: 28,
       shadowOffset: { width: 0, height: 16 },
     },
+    composer: {
+      minHeight: 62,
+      borderRadius: 31,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingLeft: 20,
+      paddingRight: 8,
+      paddingVertical: 8,
+      backgroundColor: isDark ? '#202020' : '#ffffff',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.08)',
+    },
     composerFocused: {
-      borderColor: isDark ? 'rgba(255,255,255,0.28)' : 'rgba(20,20,20,0.18)',
-      shadowOpacity: 0.24,
-      shadowRadius: 32,
-      transform: [{ scale: 1.006 }],
+      borderColor: isDark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.16)',
     },
     commandInput: {
       flex: 1,
-      minHeight: 46,
-      maxHeight: 118,
+      height: 44,
       color: colors.text,
       paddingHorizontal: 0,
-      paddingVertical: 12,
-      fontSize: 18,
-      lineHeight: 24,
+      paddingTop: 0,
+      paddingBottom: 0,
+      fontSize: 17,
+      lineHeight: 20,
     },
     sendButton: {
       width: 44,
