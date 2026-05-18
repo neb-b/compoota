@@ -116,6 +116,19 @@ Create a pairing code from the setup page, then enter:
 
 After pairing, the app saves the server URL, device ID, and device token locally.
 
+You can also create a pairing code from the server shell:
+
+```sh
+cd apps/server
+npm run pairing-code
+```
+
+In Docker:
+
+```sh
+docker compose exec house-server npm run pairing-code:prod
+```
+
 ## Security model
 
 Setup endpoints require `Authorization: Bearer <HOUSE_SETUP_SECRET>`. Command endpoints require a long-lived device token created during pairing. Raw pairing codes and raw device tokens are not stored; the server stores hashes.
