@@ -6,6 +6,7 @@ import type { KeyboardEvent } from 'react-native'
 import {
   ActivityIndicator,
   Image,
+  type ImageSourcePropType,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -52,7 +53,8 @@ type ActivityStep = {
 
 type MessageMedia = {
   id: string
-  uri: string
+  uri?: string
+  serverId?: string
   mimeType: string
   fileName?: string
   width?: number
@@ -290,6 +292,19 @@ function parseMessages(value: string | null): Message[] | null {
   return messages.length > 0 ? messages : null
 }
 
+function mediaImageSource(media: MessageMedia, connection: Connection): ImageSourcePropType {
+  if (media.uri) {
+    return { uri: media.uri }
+  }
+
+  return {
+    uri: `${connection.serverUrl}/media/${media.serverId}`,
+    headers: {
+      Authorization: `Bearer ${connection.deviceToken}`,
+    },
+  }
+}
+
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -305,12 +320,14 @@ function streamCommandRequest({
   connection,
   text,
   media,
+  onMediaStored,
   onActivity,
   onReply,
 }: {
   connection: Connection
   text: string
   media?: PendingMedia[]
+  onMediaStored?: (media: MessageMedia[]) => void
   onActivity: (step: ActivityStep) => void
   onReply: (reply: string, activity?: ActivityStep[]) => void
 }): Promise<void> {
@@ -346,6 +363,23 @@ function streamCommandRequest({
 
         if (parsed.event === 'activity') {
           onActivity(parsed.data as ActivityStep)
+        } else if (parsed.event === 'media') {
+          const data = parsed.data as {
+            media?: Array<{ id?: string; mimeType?: string; fileName?: string }>
+          }
+          const storedMedia = Array.isArray(data.media)
+            ? data.media
+                .filter((item) => item.id && item.mimeType)
+                .map((item) => ({
+                  id: item.id as string,
+                  serverId: item.id,
+                  mimeType: item.mimeType as string,
+                  fileName: item.fileName,
+                }))
+            : []
+          if (storedMedia.length > 0) {
+            onMediaStored?.(storedMedia)
+          }
         } else if (parsed.event === 'reply') {
           const data = parsed.data as { reply?: string; activity?: ActivityStep[] }
           onReply(data.reply || '', Array.isArray(data.activity) ? data.activity : undefined)
@@ -435,6 +469,9 @@ export default function HomeScreen() {
   const sidebarOpenValue = useSharedValue(false)
 
   const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId)
+  const hasMessages = messages.some(
+    (message) => message.text || message.media?.length || message.activity?.length,
+  )
   const sidebarServerHost = useMemo(() => {
     if (!connection) {
       return ''
@@ -714,10 +751,11 @@ export default function HomeScreen() {
     const mediaForRequest = pendingMedia
     const mediaForMessage = mediaForRequest.map(({ base64: _base64, ...item }) => item)
     setPendingMedia([])
+    const userId = messageId()
     const assistantId = messageId()
     setMessages((current) => [
       ...current,
-      { id: messageId(), role: 'user', text: text || 'Photo', media: mediaForMessage },
+      { id: userId, role: 'user', text: text || 'Photo', media: mediaForMessage },
       {
         id: assistantId,
         role: 'assistant',
@@ -738,6 +776,18 @@ export default function HomeScreen() {
         connection,
         text,
         media: mediaForRequest,
+        onMediaStored: (storedMedia) => {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === userId
+                ? {
+                    ...message,
+                    media: storedMedia,
+                  }
+                : message,
+            ),
+          )
+        },
         onActivity: (step) => {
           updateAssistant((message) => ({
             ...message,
@@ -981,24 +1031,46 @@ export default function HomeScreen() {
                   <Pressable
                     accessibilityLabel="Open sidebar"
                     onPress={openSidebar}
-                    style={({ pressed }) => [styles.topIconButton, pressed && styles.pressed]}
+                    style={({ pressed }) => [styles.topIconButtonHitbox, pressed && styles.glassPressed]}
                   >
-                    <View style={styles.sidebarGlyph}>
-                      <View style={styles.sidebarGlyphLine} />
-                      <View style={[styles.sidebarGlyphLine, styles.sidebarGlyphLineShort]} />
-                    </View>
+                    <GlassSurface
+                      colorScheme={isDark ? 'dark' : 'light'}
+                      enabled={liquidGlassEnabled}
+                      isInteractive
+                      style={styles.topIconButton}
+                      tintColor={colors.glassTint}
+                    >
+                      <View style={styles.sidebarGlyph}>
+                        <View style={styles.sidebarGlyphLine} />
+                        <View style={[styles.sidebarGlyphLine, styles.sidebarGlyphLineShort]} />
+                      </View>
+                    </GlassSurface>
                   </Pressable>
 
-                  <Pressable
-                    accessibilityLabel="Start new chat"
-                    onPress={startFreshChat}
-                    style={({ pressed }) => [styles.topIconButton, pressed && styles.pressed]}
-                  >
-                    <View style={styles.newChatGlyph}>
-                      <View style={styles.newChatGlyphHorizontal} />
-                      <View style={styles.newChatGlyphVertical} />
-                    </View>
-                  </Pressable>
+                  {hasMessages ? (
+                    <Pressable
+                      accessibilityLabel="Start new chat"
+                      onPress={startFreshChat}
+                      style={({ pressed }) => [styles.topIconButtonHitbox, pressed && styles.glassPressed]}
+                    >
+                      <GlassSurface
+                        colorScheme={isDark ? 'dark' : 'light'}
+                        enabled={liquidGlassEnabled}
+                        isInteractive
+                        style={styles.topIconButton}
+                        tintColor={colors.glassTint}
+                      >
+                        <View style={styles.newChatGlyph}>
+                          <View style={styles.newChatPad} />
+                          <View style={styles.newChatPadTop} />
+                          <View style={styles.newChatPencil}>
+                            <View style={styles.newChatPencilBody} />
+                            <View style={styles.newChatPencilTip} />
+                          </View>
+                        </View>
+                      </GlassSurface>
+                    </Pressable>
+                  ) : null}
                 </View>
 
                 <ScrollView
@@ -1025,9 +1097,7 @@ export default function HomeScreen() {
                               ]}
                             >
                               <View style={styles.activityLineTextWrap}>
-                                <Text style={styles.activityLineTitle}>
-                                  {activityStatusText(message)}
-                                </Text>
+                                <Text style={styles.activityLineTitle}>{activityStatusText(message)}</Text>
                               </View>
                             </Pressable>
                           ) : null}
@@ -1038,7 +1108,7 @@ export default function HomeScreen() {
                                   key={item.id}
                                   accessibilityLabel="Uploaded photo"
                                   resizeMode="cover"
-                                  source={{ uri: item.uri }}
+                                  source={mediaImageSource(item, connection)}
                                   style={styles.messageImage}
                                 />
                               ))}
@@ -1397,39 +1467,86 @@ function createStyles(
       justifyContent: 'space-between',
       pointerEvents: 'box-none',
     },
-    topIconButton: {
+    topIconButtonHitbox: {
       width: 46,
       height: 46,
       borderRadius: 23,
+    },
+    topIconButton: {
+      flex: 1,
+      borderRadius: 23,
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: isDark ? 'rgba(33,33,33,0.74)' : 'rgba(255,255,255,0.74)',
+      backgroundColor: liquidGlassEnabled
+        ? 'transparent'
+        : isDark
+          ? 'rgba(24,24,24,0.82)'
+          : 'rgba(255,255,255,0.82)',
       borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
+      borderColor: liquidGlassEnabled
+        ? isDark
+          ? 'rgba(255,255,255,0.22)'
+          : 'rgba(255,255,255,0.72)'
+        : colors.border,
       shadowColor,
       shadowOpacity: 0.14,
       shadowRadius: 18,
       shadowOffset: { width: 0, height: 10 },
     },
     newChatGlyph: {
-      width: 19,
-      height: 19,
+      width: 22,
+      height: 22,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    newChatGlyphHorizontal: {
+    newChatPad: {
       position: 'absolute',
-      width: 19,
-      height: 2.25,
+      left: 3,
+      top: 5,
+      width: 13,
+      height: 14,
+      borderRadius: 3,
+      borderWidth: 1.8,
+      borderColor: colors.text,
+    },
+    newChatPadTop: {
+      position: 'absolute',
+      left: 6,
+      top: 3,
+      width: 9,
+      height: 1.8,
+      borderRadius: 1,
+      backgroundColor: colors.text,
+    },
+    newChatPencil: {
+      position: 'absolute',
+      right: 2,
+      top: 3,
+      width: 14,
+      height: 14,
+      transform: [{ rotate: '-42deg' }],
+    },
+    newChatPencilBody: {
+      position: 'absolute',
+      left: 5,
+      top: 1,
+      width: 4,
+      height: 13,
       borderRadius: 2,
       backgroundColor: colors.text,
     },
-    newChatGlyphVertical: {
+    newChatPencilTip: {
       position: 'absolute',
-      width: 2.25,
-      height: 19,
-      borderRadius: 2,
-      backgroundColor: colors.text,
+      left: 5,
+      top: 13,
+      width: 0,
+      height: 0,
+      borderLeftWidth: 2,
+      borderRightWidth: 2,
+      borderTopWidth: 4,
+      borderLeftColor: 'transparent',
+      borderRightColor: 'transparent',
+      borderTopColor: colors.text,
     },
     sidebarGlyph: {
       width: 20,

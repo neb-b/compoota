@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type Database from "better-sqlite3";
@@ -36,6 +36,16 @@ const commandSchema = z.object({
 });
 
 type CommandBody = z.infer<typeof commandSchema>;
+
+type MediaRow = {
+  id: string;
+  device_id: string;
+  file_path: string;
+  mime_type: string;
+  original_name: string | null;
+  byte_size: number;
+  created_at: string;
+};
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -149,6 +159,15 @@ function saveCommandMedia(
   });
 }
 
+function mediaResponse(media: Array<{ id: string; mimeType: string; originalName?: string; byteSize: number }>) {
+  return media.map((item) => ({
+    id: item.id,
+    mimeType: item.mimeType,
+    fileName: item.originalName,
+    byteSize: item.byteSize
+  }));
+}
+
 function buildHermesText(text: string, media: Array<{ id: string; path: string; mimeType: string }>): string {
   const trimmed = text.trim();
   if (media.length === 0) {
@@ -249,6 +268,25 @@ function createServer(config: Config, db: Database.Database) {
     return { ok: true };
   });
 
+  app.get("/media/:id", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const media = db
+      .prepare("SELECT * FROM media WHERE id = ? AND device_id = ?")
+      .get(params.id, device.id) as MediaRow | undefined;
+
+    if (!media || !existsSync(media.file_path)) {
+      reply.status(404).send({ error: "Media not found" });
+      return;
+    }
+
+    reply
+      .type(media.mime_type)
+      .header("Cache-Control", "private, max-age=31536000, immutable")
+      .header("Content-Length", media.byte_size)
+      .send(createReadStream(media.file_path));
+  });
+
   app.post("/pair", {
     config: {
       rateLimit: {
@@ -335,6 +373,7 @@ function createServer(config: Config, db: Database.Database) {
 
     return {
       reply: result.reply,
+      media: mediaResponse(media),
       activity: fullActivity
     };
   });
@@ -375,6 +414,9 @@ function createServer(config: Config, db: Database.Database) {
     emit(commandActivity("compoota.server.auth", "Device token checked out", `Device: ${device.name}`));
     for (const item of media) {
       emit(commandActivity("compoota.server.media", "Stored attached photo", item.path));
+    }
+    if (media.length > 0) {
+      sendSse(reply, "media", { media: mediaResponse(media) });
     }
 
     try {
