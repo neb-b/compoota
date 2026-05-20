@@ -4,7 +4,6 @@ import * as ImagePicker from 'expo-image-picker'
 import { LinearGradient } from 'expo-linear-gradient'
 import { SymbolView, type SFSymbol } from 'expo-symbols'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { KeyboardEvent } from 'react-native'
 import {
   ActivityIndicator,
   Alert,
@@ -26,6 +25,7 @@ import {
   type ViewStyle,
 } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
+import { KeyboardStickyView } from 'react-native-keyboard-controller'
 import Animated, {
   interpolate,
   runOnJS,
@@ -501,14 +501,12 @@ function streamCommandRequest({
 export default function HomeScreen() {
   const colorScheme = useColorScheme()
   const insets = useSafeAreaInsets()
-  const { width: screenWidth, height: screenHeight } = useWindowDimensions()
+  const { width: screenWidth } = useWindowDimensions()
   const isDark = colorScheme === 'dark'
-  const [keyboardHeight, setKeyboardHeight] = useState(0)
-  const composerBottom = keyboardHeight > 0 ? Math.max(8, keyboardHeight - insets.bottom + 8) : 12
   const liquidGlassEnabled = useMemo(canRenderLiquidGlass, [])
   const styles = useMemo(
-    () => createStyles(isDark, insets, composerBottom, liquidGlassEnabled),
-    [composerBottom, insets, isDark, liquidGlassEnabled],
+    () => createStyles(isDark, insets, liquidGlassEnabled),
+    [insets, isDark, liquidGlassEnabled],
   )
   const colors = useMemo(() => createColors(isDark), [isDark])
   const scrollRef = useRef<ScrollView>(null)
@@ -541,6 +539,90 @@ export default function HomeScreen() {
   const sidebarOpenValue = useSharedValue(false)
   const expandedMediaTranslateX = useSharedValue(0)
   const expandedMediaTranslateY = useSharedValue(0)
+
+  const renderComposer = () => (
+    <>
+      <Pressable
+        accessibilityLabel="Add photo"
+        disabled={busy}
+        onPress={() => setMediaSheetVisible(true)}
+        style={({ pressed }) => [
+          styles.attachButtonHitbox,
+          (pressed || busy) && styles.glassPressed,
+        ]}
+      >
+        <GlassSurface
+          colorScheme={isDark ? 'dark' : 'light'}
+          enabled={liquidGlassEnabled}
+          isInteractive
+          style={styles.attachButton}
+          tintColor={colors.glassTint}
+        >
+          <AppleIcon color={colors.text} name="plus" size={27} weight="regular" />
+        </GlassSurface>
+      </Pressable>
+
+      <GlassSurface
+        colorScheme={isDark ? 'dark' : 'light'}
+        enabled={liquidGlassEnabled}
+        isInteractive
+        style={[styles.composer, composerFocused && styles.composerFocused]}
+        tintColor={colors.glassTint}
+      >
+        {pendingMedia.length ? (
+          <View style={styles.pendingMediaStrip}>
+            {pendingMedia.map((item) => (
+              <View key={item.id} style={styles.pendingMediaItem}>
+                <View accessibilityLabel="Selected photo" style={styles.pendingMediaImage}>
+                  <View style={styles.pendingMediaGlyphFrame}>
+                    <View style={styles.pendingMediaGlyphSun} />
+                    <View style={styles.pendingMediaGlyphHill} />
+                  </View>
+                </View>
+                <Pressable
+                  accessibilityLabel="Remove selected photo"
+                  onPress={() => setPendingMedia([])}
+                  style={({ pressed }) => [styles.removeMediaButton, pressed && styles.pressed]}
+                >
+                  <View style={styles.removeMediaGlyph}>
+                    <View style={[styles.removeMediaGlyphLine, styles.removeMediaGlyphLineA]} />
+                    <View style={[styles.removeMediaGlyphLine, styles.removeMediaGlyphLineB]} />
+                  </View>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : null}
+        <View style={styles.composerInputRow}>
+          <TextInput
+            keyboardAppearance={isDark ? 'dark' : 'light'}
+            multiline
+            onBlur={() => setComposerFocused(false)}
+            onChangeText={setCommand}
+            onFocus={() => {
+              setComposerFocused(true)
+              scheduleScrollToEnd(true)
+            }}
+            onSubmitEditing={sendCommand}
+            placeholder="Ask compoota"
+            placeholderTextColor={colors.placeholder}
+            returnKeyType="default"
+            selectionColor={colors.selection}
+            style={styles.commandInput}
+            value={command}
+          />
+          <Pressable
+            accessibilityLabel="Send message"
+            disabled={busy}
+            onPress={sendCommand}
+            style={({ pressed }) => [styles.sendButton, (pressed || busy) && styles.pressed]}
+          >
+            <AppleIcon color={colors.actionText} name="arrow.up" size={20} weight="bold" />
+          </Pressable>
+        </View>
+      </GlassSurface>
+    </>
+  )
 
   const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId)
   const hasMessages = messages.some(
@@ -803,31 +885,17 @@ export default function HomeScreen() {
   }, [sidebarOpenDistance, sidebarOpenValue, sidebarTranslateX])
 
   useEffect(() => {
-    const updateKeyboardFrame = (event: KeyboardEvent) => {
-      Keyboard.scheduleLayoutAnimation(event)
-      setKeyboardHeight(Math.max(0, screenHeight - event.endCoordinates.screenY))
-      scheduleScrollToEnd(true)
-    }
-
-    const hideKeyboard = (event: KeyboardEvent) => {
-      Keyboard.scheduleLayoutAnimation(event)
-      setKeyboardHeight(0)
-    }
-
-    const changeFrameSubscription = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow',
-      updateKeyboardFrame,
-    )
     const hideSubscription = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
-      hideKeyboard,
+      () => {
+        setComposerFocused(false)
+      },
     )
 
     return () => {
-      changeFrameSubscription.remove()
       hideSubscription.remove()
     }
-  }, [scheduleScrollToEnd, screenHeight])
+  }, [])
 
   useEffect(
     () => () => {
@@ -1362,6 +1430,7 @@ export default function HomeScreen() {
                 {activeScreen === 'home' ? (
                   <>
                     <ScrollView
+                      automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
                       ref={scrollRef}
                       contentContainerStyle={styles.messagesContent}
                       keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
@@ -1425,88 +1494,9 @@ export default function HomeScreen() {
 
                     {error ? <Text style={styles.chatError}>{error}</Text> : null}
 
-                    <View style={styles.composerWrap}>
-                      <Pressable
-                        accessibilityLabel="Add photo"
-                        disabled={busy}
-                        onPress={() => setMediaSheetVisible(true)}
-                        style={({ pressed }) => [
-                          styles.attachButtonHitbox,
-                          (pressed || busy) && styles.glassPressed,
-                        ]}
-                      >
-                        <GlassSurface
-                          colorScheme={isDark ? 'dark' : 'light'}
-                          enabled={liquidGlassEnabled}
-                        isInteractive
-                        style={styles.attachButton}
-                        tintColor={colors.glassTint}
-                      >
-                          <AppleIcon color={colors.text} name="plus" size={27} weight="regular" />
-                        </GlassSurface>
-                      </Pressable>
-
-                      <GlassSurface
-                        colorScheme={isDark ? 'dark' : 'light'}
-                        enabled={liquidGlassEnabled}
-                        isInteractive
-                        style={[styles.composer, composerFocused && styles.composerFocused]}
-                        tintColor={colors.glassTint}
-                      >
-                        {pendingMedia.length ? (
-                          <View style={styles.pendingMediaStrip}>
-                            {pendingMedia.map((item) => (
-                              <View key={item.id} style={styles.pendingMediaItem}>
-                                <View accessibilityLabel="Selected photo" style={styles.pendingMediaImage}>
-                                  <View style={styles.pendingMediaGlyphFrame}>
-                                    <View style={styles.pendingMediaGlyphSun} />
-                                    <View style={styles.pendingMediaGlyphHill} />
-                                  </View>
-                                </View>
-                                <Pressable
-                                  accessibilityLabel="Remove selected photo"
-                                  onPress={() => setPendingMedia([])}
-                                  style={({ pressed }) => [styles.removeMediaButton, pressed && styles.pressed]}
-                                >
-                                  <View style={styles.removeMediaGlyph}>
-                                    <View style={[styles.removeMediaGlyphLine, styles.removeMediaGlyphLineA]} />
-                                    <View style={[styles.removeMediaGlyphLine, styles.removeMediaGlyphLineB]} />
-                                  </View>
-                                </Pressable>
-                              </View>
-                            ))}
-                          </View>
-                        ) : null}
-                        <View style={styles.composerInputRow}>
-                          <TextInput
-                            keyboardAppearance={isDark ? 'dark' : 'light'}
-                            multiline
-                            onBlur={() => setComposerFocused(false)}
-                            onChangeText={setCommand}
-                            onFocus={() => setComposerFocused(true)}
-                            onSubmitEditing={sendCommand}
-                            placeholder="Ask compoota"
-                            placeholderTextColor={colors.placeholder}
-                            returnKeyType="default"
-                            selectionColor={colors.selection}
-                            style={styles.commandInput}
-                            value={command}
-                          />
-                          <Pressable
-                            accessibilityLabel="Send message"
-                            disabled={busy}
-                            onPress={sendCommand}
-                            style={({ pressed }) => [styles.sendButton, (pressed || busy) && styles.pressed]}
-                          >
-                            {busy ? (
-                              <Text style={styles.busyText}>...</Text>
-                            ) : (
-                              <AppleIcon color={colors.actionText} name="arrow.up" size={20} weight="bold" />
-                            )}
-                          </Pressable>
-                        </View>
-                      </GlassSurface>
-                    </View>
+                    <KeyboardStickyView offset={{ opened: insets.bottom + 6 }} style={styles.composerWrap}>
+                      {renderComposer()}
+                    </KeyboardStickyView>
                   </>
                 ) : (
                   <ScrollView
@@ -1729,7 +1719,6 @@ function createColors(isDark: boolean) {
 function createStyles(
   isDark: boolean,
   insets: { top: number; bottom: number },
-  composerBottom: number,
   liquidGlassEnabled: boolean,
 ) {
   const colors = createColors(isDark)
@@ -1976,7 +1965,7 @@ function createStyles(
     messagesContent: {
       paddingTop: 64,
       paddingHorizontal: 20,
-      paddingBottom: composerBottom + 118,
+      paddingBottom: 130,
       gap: 24,
     },
     messageRow: {
@@ -2053,7 +2042,7 @@ function createStyles(
       position: 'absolute',
       left: 24,
       right: 24,
-      bottom: composerBottom + 86,
+      bottom: 98,
       color: colors.error,
       textAlign: 'center',
       fontSize: 13,
@@ -2342,7 +2331,7 @@ function createStyles(
       position: 'absolute',
       left: 16,
       right: 16,
-      bottom: composerBottom,
+      bottom: 12,
       zIndex: 4,
       flexDirection: 'row',
       alignItems: 'flex-end',
@@ -2501,12 +2490,6 @@ function createStyles(
       backgroundColor: colors.action,
       alignItems: 'center',
       justifyContent: 'center',
-    },
-    busyText: {
-      color: colors.actionText,
-      fontSize: 15,
-      fontWeight: '900',
-      letterSpacing: 0,
     },
   })
 }

@@ -5,6 +5,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import React from 'react';
 import { StatusBar, useColorScheme } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
@@ -26,16 +27,18 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <StatusBar
-        backgroundColor="transparent"
-        barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'}
-        translucent
-      />
-      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="index" />
-        </Stack>
-      </ThemeProvider>
+      <KeyboardProvider>
+        <StatusBar
+          backgroundColor="transparent"
+          barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'}
+          translucent
+        />
+        <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="index" />
+          </Stack>
+        </ThemeProvider>
+      </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }
