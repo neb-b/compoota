@@ -1,7 +1,12 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage'
+import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect'
+import * as ImagePicker from 'expo-image-picker'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { KeyboardEvent } from 'react-native'
 import {
   ActivityIndicator,
+  Image,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -13,54 +18,79 @@ import {
   useColorScheme,
   useWindowDimensions,
   View,
-} from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native'
+import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Animated, {
   interpolate,
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
-} from 'react-native-reanimated';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+} from 'react-native-reanimated'
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 type Connection = {
-  serverUrl: string;
-  deviceId: string;
-  deviceToken: string;
-};
+  serverUrl: string
+  deviceId: string
+  deviceToken: string
+}
 
 type ConnectionPreferences = {
-  serverUrl: string;
-  deviceName: string;
-};
+  serverUrl: string
+  deviceName: string
+}
 
 type ActivityStep = {
-  id: string;
-  label: string;
-  detail?: string;
-  status: 'pending' | 'running' | 'done' | 'error';
-  at?: string;
-};
+  id: string
+  label: string
+  detail?: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  at?: string
+}
+
+type MessageMedia = {
+  id: string
+  uri: string
+  mimeType: string
+  fileName?: string
+  width?: number
+  height?: number
+}
 
 type Message = {
-  id: string;
-  role: 'user' | 'assistant';
-  text: string;
-  activity?: ActivityStep[];
-  isStreaming?: boolean;
-};
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+  media?: MessageMedia[]
+  activity?: ActivityStep[]
+  isStreaming?: boolean
+}
 
-const STORAGE_KEY = 'compoota.connection.v1';
-const PREFERENCES_KEY = 'compoota.connection-preferences.v1';
-const MESSAGE_HISTORY_KEY_PREFIX = 'compoota.messages.v1.';
-const SIDEBAR_EDGE_HIT_SLOP = 30;
-const SIDEBAR_LAYER_RADIUS = 58;
+type PendingMedia = MessageMedia & {
+  base64: string
+}
+
+type GlassSurfaceProps = {
+  children: React.ReactNode
+  colorScheme: 'light' | 'dark'
+  enabled: boolean
+  isInteractive?: boolean
+  style: StyleProp<ViewStyle>
+  tintColor?: string
+}
+
+const STORAGE_KEY = 'compoota.connection.v1'
+const PREFERENCES_KEY = 'compoota.connection-preferences.v1'
+const MESSAGE_HISTORY_KEY_PREFIX = 'compoota.messages.v1.'
+const SIDEBAR_EDGE_HIT_SLOP = 30
+const SIDEBAR_LAYER_RADIUS = 58
 const SIDEBAR_SPRING = {
   damping: 28,
   mass: 0.9,
   stiffness: 240,
-};
+}
 
 const PENDING_ACTIVITY: ActivityStep[] = [
   {
@@ -79,296 +109,358 @@ const PENDING_ACTIVITY: ActivityStep[] = [
     detail: 'compoota is passing the request along.',
     status: 'running',
   },
-];
+]
 
-function normalizeServerUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, '');
-  if (!trimmed) {
-    throw new Error('Enter the house-server URL.');
+function canRenderLiquidGlass(): boolean {
+  if (Platform.OS !== 'ios') {
+    return false
   }
 
-  let url: URL;
   try {
-    url = new URL(trimmed);
+    return isGlassEffectAPIAvailable()
   } catch {
-    throw new Error('Enter a valid http:// or https:// server URL.');
+    return false
+  }
+}
+
+function GlassSurface({
+  children,
+  colorScheme,
+  enabled,
+  isInteractive,
+  style,
+  tintColor,
+}: GlassSurfaceProps) {
+  if (!enabled) {
+    return <View style={style}>{children}</View>
+  }
+
+  return (
+    <GlassView
+      colorScheme={colorScheme}
+      glassEffectStyle="regular"
+      isInteractive={isInteractive}
+      style={style}
+      tintColor={tintColor}
+    >
+      {children}
+    </GlassView>
+  )
+}
+
+function normalizeServerUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, '')
+  if (!trimmed) {
+    throw new Error('Enter the house-server URL.')
+  }
+
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    throw new Error('Enter a valid http:// or https:// server URL.')
   }
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('Use an http:// or https:// server URL.');
+    throw new Error('Use an http:// or https:// server URL.')
   }
 
-  return url.toString().replace(/\/+$/, '');
+  return url.toString().replace(/\/+$/, '')
 }
 
 async function readError(response: Response): Promise<string> {
   try {
-    const data = (await response.json()) as { error?: string };
-    return data.error || `Request failed with status ${response.status}.`;
+    const data = (await response.json()) as { error?: string }
+    return data.error || `Request failed with status ${response.status}.`
   } catch {
-    return `Request failed with status ${response.status}.`;
+    return `Request failed with status ${response.status}.`
   }
 }
 
 function messageId(): string {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 function messageHistoryKey(deviceId: string): string {
-  return `${MESSAGE_HISTORY_KEY_PREFIX}${deviceId}`;
+  return `${MESSAGE_HISTORY_KEY_PREFIX}${deviceId}`
 }
 
 function activitySummary(activity: ActivityStep[], includeRunning = true): string {
   if (activity.some((step) => step.status === 'error')) {
-    return 'compoota hit a snag';
+    return 'compoota hit a snag'
   }
 
-  const running = includeRunning ? [...activity].reverse().find((step) => step.status === 'running') : undefined;
+  const running = includeRunning
+    ? [...activity].reverse().find((step) => step.status === 'running')
+    : undefined
   if (running) {
-    return running.label;
+    return running.label
   }
 
-  const latest = [...activity].reverse().find((step) => step.status === 'done') ?? activity[activity.length - 1];
-  return latest?.label ?? `${activity.length} step${activity.length === 1 ? '' : 's'} completed`;
+  const latest =
+    [...activity].reverse().find((step) => step.status === 'done') ?? activity[activity.length - 1]
+  return latest?.label ?? `${activity.length} step${activity.length === 1 ? '' : 's'} completed`
 }
 
 function activityDuration(activity: ActivityStep[]): string | null {
   const times = activity
     .map((step) => (step.at ? Date.parse(step.at) : Number.NaN))
-    .filter((time) => Number.isFinite(time));
+    .filter((time) => Number.isFinite(time))
 
   if (times.length < 2) {
-    return null;
+    return null
   }
 
-  const seconds = Math.max(1, Math.round((Math.max(...times) - Math.min(...times)) / 1000));
+  const seconds = Math.max(1, Math.round((Math.max(...times) - Math.min(...times)) / 1000))
   if (seconds < 60) {
-    return `${seconds}s`;
+    return `${seconds}s`
   }
 
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`
 }
 
 function activityStatusText(message: Message): string {
-  const activity = message.activity ?? [];
+  const activity = message.activity ?? []
   if (message.isStreaming) {
-    return activitySummary(activity, true);
+    return activitySummary(activity, true)
   }
 
-  const duration = activityDuration(activity);
+  const duration = activityDuration(activity)
   if (duration) {
-    return `Worked for ${duration}`;
+    return `Worked for ${duration}`
   }
 
-  return activity.some((step) => step.status === 'error') ? 'compoota hit a snag' : 'Worked just now';
+  return activity.some((step) => step.status === 'error') ? 'compoota hit a snag' : 'Worked just now'
 }
 
 function mergeActivity(existing: ActivityStep[] = [], next: ActivityStep): ActivityStep[] {
-  const filtered = existing.filter((step) => step.id !== next.id);
-  return [...filtered, next];
+  const filtered = existing.filter((step) => step.id !== next.id)
+  return [...filtered, next]
 }
 
 function parseSseBlock(block: string): { event: string; data: unknown } | null {
-  let event = 'message';
-  const dataLines: string[] = [];
+  let event = 'message'
+  const dataLines: string[] = []
 
   for (const line of block.split(/\r?\n/)) {
     if (line.startsWith('event:')) {
-      event = line.slice(6).trim();
+      event = line.slice(6).trim()
     } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart());
+      dataLines.push(line.slice(5).trimStart())
     }
   }
 
   if (dataLines.length === 0) {
-    return null;
+    return null
   }
 
   try {
-    return { event, data: JSON.parse(dataLines.join('\n')) };
+    return { event, data: JSON.parse(dataLines.join('\n')) }
   } catch {
-    return null;
+    return null
   }
 }
 
 function parseMessages(value: string | null): Message[] | null {
   if (!value) {
-    return null;
+    return null
   }
 
-  const parsed = JSON.parse(value) as Message[];
+  const parsed = JSON.parse(value) as Message[]
   if (!Array.isArray(parsed)) {
-    return null;
+    return null
   }
 
-  const messages = parsed.filter(
-    (message) =>
-      message &&
-      typeof message.id === 'string' &&
-      typeof message.text === 'string' &&
-      (message.role === 'user' || message.role === 'assistant'),
-  ).map((message) => ({
-    ...message,
-    activity: Array.isArray(message.activity) ? message.activity : undefined,
-  }));
+  const messages = parsed
+    .filter(
+      (message) =>
+        message &&
+        typeof message.id === 'string' &&
+        typeof message.text === 'string' &&
+        (message.role === 'user' || message.role === 'assistant'),
+    )
+    .map((message) => ({
+      ...message,
+      media: Array.isArray(message.media) ? message.media : undefined,
+      activity: Array.isArray(message.activity) ? message.activity : undefined,
+    }))
 
-  return messages.length > 0 ? messages : null;
+  return messages.length > 0 ? messages : null
 }
 
-async function fetchWithTimeout(
-  url: string,
-  options: RequestInit,
-  timeoutMs: number,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await fetch(url, { ...options, signal: controller.signal })
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(timeout)
   }
 }
 
 function streamCommandRequest({
   connection,
   text,
+  media,
   onActivity,
   onReply,
 }: {
-  connection: Connection;
-  text: string;
-  onActivity: (step: ActivityStep) => void;
-  onReply: (reply: string, activity?: ActivityStep[]) => void;
+  connection: Connection
+  text: string
+  media?: PendingMedia[]
+  onActivity: (step: ActivityStep) => void
+  onReply: (reply: string, activity?: ActivityStep[]) => void
 }): Promise<void> {
   return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    let cursor = 0;
-    let settled = false;
-    let streamBuffer = '';
+    const xhr = new XMLHttpRequest()
+    let cursor = 0
+    let settled = false
+    let streamBuffer = ''
 
     function fail(error: Error) {
       if (settled) {
-        return;
+        return
       }
-      settled = true;
-      reject(error);
+      settled = true
+      reject(error)
     }
 
     function consume(final = false) {
-      const chunk = xhr.responseText.slice(cursor);
-      cursor = xhr.responseText.length;
-      streamBuffer += chunk;
+      const chunk = xhr.responseText.slice(cursor)
+      cursor = xhr.responseText.length
+      streamBuffer += chunk
       if (final && streamBuffer.trim()) {
-        streamBuffer += '\n\n';
+        streamBuffer += '\n\n'
       }
-      const blocks = streamBuffer.split(/\n\n/);
-      streamBuffer = final ? '' : (blocks.pop() ?? '');
+      const blocks = streamBuffer.split(/\n\n/)
+      streamBuffer = final ? '' : (blocks.pop() ?? '')
 
       for (const block of blocks) {
-        const parsed = parseSseBlock(block);
+        const parsed = parseSseBlock(block)
         if (!parsed) {
-          continue;
+          continue
         }
 
         if (parsed.event === 'activity') {
-          onActivity(parsed.data as ActivityStep);
+          onActivity(parsed.data as ActivityStep)
         } else if (parsed.event === 'reply') {
-          const data = parsed.data as { reply?: string; activity?: ActivityStep[] };
-          onReply(data.reply || '', Array.isArray(data.activity) ? data.activity : undefined);
+          const data = parsed.data as { reply?: string; activity?: ActivityStep[] }
+          onReply(data.reply || '', Array.isArray(data.activity) ? data.activity : undefined)
         } else if (parsed.event === 'error') {
-          fail(new Error('Command failed.'));
+          fail(new Error('Command failed.'))
         }
       }
     }
 
-    xhr.open('POST', `${connection.serverUrl}/command/stream`);
-    xhr.timeout = 180000;
-    xhr.setRequestHeader('Authorization', `Bearer ${connection.deviceToken}`);
-    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.open('POST', `${connection.serverUrl}/command/stream`)
+    xhr.timeout = 180000
+    xhr.setRequestHeader('Authorization', `Bearer ${connection.deviceToken}`)
+    xhr.setRequestHeader('Content-Type', 'application/json')
     xhr.onreadystatechange = () => {
       if (xhr.readyState === 3) {
-        consume();
+        consume()
       }
-    };
+    }
     xhr.onload = () => {
-      consume(true);
+      consume(true)
 
       if (settled) {
-        return;
+        return
       }
 
       if (xhr.status === 401) {
-        fail(new Error('This device is unauthorized or revoked. Reset and pair again.'));
-        return;
+        fail(new Error('This device is unauthorized or revoked. Reset and pair again.'))
+        return
       }
 
       if (xhr.status < 200 || xhr.status >= 300) {
-        fail(new Error(`Command failed with status ${xhr.status}.`));
-        return;
+        fail(new Error(`Command failed with status ${xhr.status}.`))
+        return
       }
 
-      settled = true;
-      resolve();
-    };
-    xhr.onerror = () => fail(new Error('Server unreachable. Check the URL and LAN connection.'));
-    xhr.ontimeout = () => fail(new Error('compoota is taking too long to respond. Try again in a moment.'));
-    xhr.send(JSON.stringify({ text }));
-  });
+      settled = true
+      resolve()
+    }
+    xhr.onerror = () => fail(new Error('Server unreachable. Check the URL and LAN connection.'))
+    xhr.ontimeout = () => fail(new Error('compoota is taking too long to respond. Try again in a moment.'))
+    xhr.send(
+      JSON.stringify({
+        text,
+        media: media?.map((item) => ({
+          base64: item.base64,
+          mimeType: item.mimeType,
+          fileName: item.fileName,
+        })),
+      }),
+    )
+  })
 }
 
 export default function HomeScreen() {
-  const colorScheme = useColorScheme();
-  const insets = useSafeAreaInsets();
-  const { width: screenWidth } = useWindowDimensions();
-  const isDark = colorScheme === 'dark';
-  const styles = useMemo(() => createStyles(isDark, insets.bottom), [isDark, insets.bottom]);
-  const colors = useMemo(() => createColors(isDark), [isDark]);
-  const scrollRef = useRef<ScrollView>(null);
-  const sidebarOpenDistance = Math.min(screenWidth * 0.76, 340);
+  const colorScheme = useColorScheme()
+  const insets = useSafeAreaInsets()
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions()
+  const isDark = colorScheme === 'dark'
+  const [keyboardHeight, setKeyboardHeight] = useState(0)
+  const composerBottom = keyboardHeight > 0 ? Math.max(8, keyboardHeight - insets.bottom + 8) : 12
+  const liquidGlassEnabled = useMemo(canRenderLiquidGlass, [])
+  const styles = useMemo(
+    () => createStyles(isDark, insets, composerBottom, liquidGlassEnabled),
+    [composerBottom, insets, isDark, liquidGlassEnabled],
+  )
+  const colors = useMemo(() => createColors(isDark), [isDark])
+  const scrollRef = useRef<ScrollView>(null)
+  const sidebarOpenDistance = Math.min(screenWidth * 0.76, 340)
 
-  const [connection, setConnection] = useState<Connection | null>(null);
-  const [serverUrl, setServerUrl] = useState('');
-  const [pairingCode, setPairingCode] = useState('');
-  const [deviceName, setDeviceName] = useState('');
-  const [command, setCommand] = useState('');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [selectedActivityMessageId, setSelectedActivityMessageId] = useState<string | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [composerFocused, setComposerFocused] = useState(false);
-  const sidebarTranslateX = useSharedValue(0);
-  const sidebarGestureStartTranslateX = useSharedValue(0);
-  const sidebarGestureEnabled = useSharedValue(false);
-  const sidebarOpenValue = useSharedValue(false);
+  const [connection, setConnection] = useState<Connection | null>(null)
+  const [serverUrl, setServerUrl] = useState('')
+  const [pairingCode, setPairingCode] = useState('')
+  const [deviceName, setDeviceName] = useState('')
+  const [command, setCommand] = useState('')
+  const [pendingMedia, setPendingMedia] = useState<PendingMedia[]>([])
+  const [mediaSheetVisible, setMediaSheetVisible] = useState(false)
+  const [messages, setMessages] = useState<Message[]>([])
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [selectedActivityMessageId, setSelectedActivityMessageId] = useState<string | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [composerFocused, setComposerFocused] = useState(false)
+  const sidebarTranslateX = useSharedValue(0)
+  const sidebarGestureStartTranslateX = useSharedValue(0)
+  const sidebarGestureEnabled = useSharedValue(false)
+  const sidebarOpenValue = useSharedValue(false)
 
-  const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId);
+  const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId)
   const sidebarServerHost = useMemo(() => {
     if (!connection) {
-      return '';
+      return ''
     }
 
     try {
-      return new URL(connection.serverUrl).host;
+      return new URL(connection.serverUrl).host
     } catch {
-      return connection.serverUrl;
+      return connection.serverUrl
     }
-  }, [connection]);
+  }, [connection])
   const openSidebar = () => {
-    setSidebarOpen(true);
-    sidebarOpenValue.value = true;
-    sidebarTranslateX.value = withSpring(sidebarOpenDistance, SIDEBAR_SPRING);
-  };
+    setSidebarOpen(true)
+    sidebarOpenValue.value = true
+    sidebarTranslateX.value = withSpring(sidebarOpenDistance, SIDEBAR_SPRING)
+  }
 
   const closeSidebar = () => {
-    setSidebarOpen(false);
-    sidebarOpenValue.value = false;
-    sidebarTranslateX.value = withSpring(0, SIDEBAR_SPRING);
-  };
+    setSidebarOpen(false)
+    sidebarOpenValue.value = false
+    sidebarTranslateX.value = withSpring(0, SIDEBAR_SPRING)
+  }
+
+  const dismissKeyboard = useCallback(() => {
+    Keyboard.dismiss()
+  }, [])
 
   const sidebarPanGesture = useMemo(
     () =>
@@ -376,35 +468,37 @@ export default function HomeScreen() {
         .activeOffsetX([-8, 8])
         .failOffsetY([-16, 16])
         .onBegin((event) => {
-          sidebarGestureStartTranslateX.value = sidebarTranslateX.value;
-          sidebarGestureEnabled.value =
-            sidebarOpenValue.value || event.absoluteX <= SIDEBAR_EDGE_HIT_SLOP;
+          sidebarGestureStartTranslateX.value = sidebarTranslateX.value
+          sidebarGestureEnabled.value = sidebarOpenValue.value || event.absoluteX <= SIDEBAR_EDGE_HIT_SLOP
+          if (sidebarGestureEnabled.value) {
+            runOnJS(dismissKeyboard)()
+          }
         })
         .onUpdate((event) => {
           if (!sidebarGestureEnabled.value) {
-            return;
+            return
           }
 
           const nextTranslateX = Math.min(
             sidebarOpenDistance,
             Math.max(0, sidebarGestureStartTranslateX.value + event.translationX),
-          );
-          sidebarTranslateX.value = nextTranslateX;
+          )
+          sidebarTranslateX.value = nextTranslateX
         })
         .onEnd((event) => {
           if (!sidebarGestureEnabled.value) {
-            return;
+            return
           }
 
-          const projectedX = sidebarTranslateX.value + event.velocityX * 0.18;
+          const projectedX = sidebarTranslateX.value + event.velocityX * 0.18
           const shouldOpen =
-            event.velocityX > 520 || (event.velocityX > -520 && projectedX > sidebarOpenDistance * 0.48);
-          sidebarOpenValue.value = shouldOpen;
+            event.velocityX > 520 || (event.velocityX > -520 && projectedX > sidebarOpenDistance * 0.48)
+          sidebarOpenValue.value = shouldOpen
           sidebarTranslateX.value = withSpring(shouldOpen ? sidebarOpenDistance : 0, {
             ...SIDEBAR_SPRING,
             velocity: event.velocityX,
-          });
-          runOnJS(setSidebarOpen)(shouldOpen);
+          })
+          runOnJS(setSidebarOpen)(shouldOpen)
         }),
     [
       sidebarGestureEnabled,
@@ -412,13 +506,14 @@ export default function HomeScreen() {
       sidebarOpenDistance,
       sidebarOpenValue,
       sidebarTranslateX,
+      dismissKeyboard,
     ],
-  );
+  )
 
   const sidebarMainStyle = useAnimatedStyle(() => {
-    const progress = sidebarOpenDistance > 0 ? sidebarTranslateX.value / sidebarOpenDistance : 0;
-    const radius = interpolate(progress, [0, 1], [0, SIDEBAR_LAYER_RADIUS]);
-    const layerScale = interpolate(progress, [0, 1], [1, 0.94]);
+    const progress = sidebarOpenDistance > 0 ? sidebarTranslateX.value / sidebarOpenDistance : 0
+    const radius = interpolate(progress, [0, 1], [0, SIDEBAR_LAYER_RADIUS])
+    const layerScale = interpolate(progress, [0, 1], [1, 0.94])
 
     return {
       borderTopLeftRadius: radius,
@@ -427,27 +522,53 @@ export default function HomeScreen() {
       borderBottomRightRadius: radius,
       borderWidth: interpolate(progress, [0, 1], [0, StyleSheet.hairlineWidth]),
       shadowOpacity: interpolate(progress, [0, 1], [0, 0.34]),
-      transform: [
-        { translateX: sidebarTranslateX.value },
-        { scale: layerScale },
-      ],
-    };
-  }, [sidebarOpenDistance]);
+      transform: [{ translateX: sidebarTranslateX.value }, { scale: layerScale }],
+    }
+  }, [sidebarOpenDistance])
 
   const sidebarUnderlayStyle = useAnimatedStyle(() => {
-    const progress = sidebarOpenDistance > 0 ? sidebarTranslateX.value / sidebarOpenDistance : 0;
+    const progress = sidebarOpenDistance > 0 ? sidebarTranslateX.value / sidebarOpenDistance : 0
 
     return {
       opacity: interpolate(progress, [0, 0.18, 1], [0.1, 0.62, 1]),
       transform: [{ translateX: interpolate(progress, [0, 1], [-28, 0]) }],
-    };
-  }, [sidebarOpenDistance]);
+    }
+  }, [sidebarOpenDistance])
 
   useEffect(() => {
     if (sidebarOpenValue.value) {
-      sidebarTranslateX.value = withSpring(sidebarOpenDistance, SIDEBAR_SPRING);
+      sidebarTranslateX.value = withSpring(sidebarOpenDistance, SIDEBAR_SPRING)
     }
-  }, [sidebarOpenDistance, sidebarOpenValue, sidebarTranslateX]);
+  }, [sidebarOpenDistance, sidebarOpenValue, sidebarTranslateX])
+
+  useEffect(() => {
+    const updateKeyboardFrame = (event: KeyboardEvent) => {
+      Keyboard.scheduleLayoutAnimation(event)
+      setKeyboardHeight(Math.max(0, screenHeight - event.endCoordinates.screenY))
+      requestAnimationFrame(() => {
+        scrollRef.current?.scrollToEnd({ animated: true })
+      })
+    }
+
+    const hideKeyboard = (event: KeyboardEvent) => {
+      Keyboard.scheduleLayoutAnimation(event)
+      setKeyboardHeight(0)
+    }
+
+    const changeFrameSubscription = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow',
+      updateKeyboardFrame,
+    )
+    const hideSubscription = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      hideKeyboard,
+    )
+
+    return () => {
+      changeFrameSubscription.remove()
+      hideSubscription.remove()
+    }
+  }, [screenHeight])
 
   useEffect(() => {
     async function loadConnection() {
@@ -455,71 +576,71 @@ export default function HomeScreen() {
         const [stored, preferences] = await Promise.all([
           AsyncStorage.getItem(STORAGE_KEY),
           AsyncStorage.getItem(PREFERENCES_KEY),
-        ]);
+        ])
 
         if (preferences) {
-          const parsedPreferences = JSON.parse(preferences) as ConnectionPreferences;
+          const parsedPreferences = JSON.parse(preferences) as ConnectionPreferences
           if (parsedPreferences.serverUrl) {
-            setServerUrl(parsedPreferences.serverUrl);
+            setServerUrl(parsedPreferences.serverUrl)
           }
           if (parsedPreferences.deviceName) {
-            setDeviceName(parsedPreferences.deviceName);
+            setDeviceName(parsedPreferences.deviceName)
           }
         }
 
         if (stored) {
-          const parsed = JSON.parse(stored) as Connection;
+          const parsed = JSON.parse(stored) as Connection
           if (parsed.serverUrl && parsed.deviceId && parsed.deviceToken) {
             const storedMessages = parseMessages(
               await AsyncStorage.getItem(messageHistoryKey(parsed.deviceId)),
-            );
-            setConnection(parsed);
-            setServerUrl(parsed.serverUrl);
-            setMessages(storedMessages ?? []);
+            )
+            setConnection(parsed)
+            setServerUrl(parsed.serverUrl)
+            setMessages(storedMessages ?? [])
           }
         }
       } catch {
-        setError('Saved connection could not be loaded. Pair again to continue.');
+        setError('Saved connection could not be loaded. Pair again to continue.')
       } finally {
-        setLoading(false);
+        setLoading(false)
       }
     }
 
-    loadConnection();
-  }, []);
+    loadConnection()
+  }, [])
 
   useEffect(() => {
-    scrollRef.current?.scrollToEnd({ animated: true });
-  }, [messages]);
+    scrollRef.current?.scrollToEnd({ animated: true })
+  }, [messages])
 
   useEffect(() => {
     if (!connection || loading) {
-      return;
+      return
     }
 
     AsyncStorage.setItem(messageHistoryKey(connection.deviceId), JSON.stringify(messages)).catch(
       () => undefined,
-    );
-  }, [connection, loading, messages]);
+    )
+  }, [connection, loading, messages])
 
   async function connect() {
-    setError('');
-    setBusy(true);
+    setError('')
+    setBusy(true)
 
     try {
-      const normalizedUrl = normalizeServerUrl(serverUrl);
-      const cleanedCode = pairingCode.trim();
+      const normalizedUrl = normalizeServerUrl(serverUrl)
+      const cleanedCode = pairingCode.trim()
       const cleanedName =
         deviceName.trim() ||
-        Platform.select({ ios: 'iPhone', android: 'Android', default: 'compoota device' });
+        Platform.select({ ios: 'iPhone', android: 'Android', default: 'compoota device' })
 
       if (!/^\d{6}$/.test(cleanedCode)) {
-        throw new Error('Enter the 6-digit pairing code from the setup page.');
+        throw new Error('Enter the 6-digit pairing code from the setup page.')
       }
 
-      const health = await fetchWithTimeout(`${normalizedUrl}/health`, { method: 'GET' }, 6000);
+      const health = await fetchWithTimeout(`${normalizedUrl}/health`, { method: 'GET' }, 6000)
       if (!health.ok) {
-        throw new Error(`Server health check failed with status ${health.status}.`);
+        throw new Error(`Server health check failed with status ${health.status}.`)
       }
 
       const response = await fetchWithTimeout(
@@ -533,32 +654,32 @@ export default function HomeScreen() {
           }),
         },
         12000,
-      );
+      )
 
       if (!response.ok) {
-        throw new Error(await readError(response));
+        throw new Error(await readError(response))
       }
 
-      const data = (await response.json()) as { deviceId: string; deviceToken: string };
+      const data = (await response.json()) as { deviceId: string; deviceToken: string }
       const nextConnection = {
         serverUrl: normalizedUrl,
         deviceId: data.deviceId,
         deviceToken: data.deviceToken,
-      };
+      }
       const nextPreferences = {
         serverUrl: normalizedUrl,
         deviceName: cleanedName,
-      };
+      }
 
       await Promise.all([
         AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextConnection)),
         AsyncStorage.setItem(PREFERENCES_KEY, JSON.stringify(nextPreferences)),
-      ]);
-      setConnection(nextConnection);
-      setServerUrl(normalizedUrl);
-      setPairingCode('');
-      setDeviceName(cleanedName);
-      setMessages([]);
+      ])
+      setConnection(nextConnection)
+      setServerUrl(normalizedUrl)
+      setPairingCode('')
+      setDeviceName(cleanedName)
+      setMessages([])
     } catch (err) {
       const message =
         err instanceof TypeError
@@ -567,31 +688,36 @@ export default function HomeScreen() {
             ? 'Server did not respond. Check that the phone can reach the Pi.'
             : err instanceof Error
               ? err.message
-              : 'Pairing failed.';
-      setError(message);
+              : 'Pairing failed.'
+      setError(message)
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
   }
 
   async function sendCommand() {
     if (!connection || busy) {
-      return;
+      return
     }
 
-    const text = command.trim();
-    if (!text) {
-      setError('Type a command first.');
-      return;
+    Keyboard.dismiss()
+
+    const text = command.trim()
+    if (!text && pendingMedia.length === 0) {
+      setError('Type a command or add a photo first.')
+      return
     }
 
-    setError('');
-    setBusy(true);
-    setCommand('');
-    const assistantId = messageId();
+    setError('')
+    setBusy(true)
+    setCommand('')
+    const mediaForRequest = pendingMedia
+    const mediaForMessage = mediaForRequest.map(({ base64: _base64, ...item }) => item)
+    setPendingMedia([])
+    const assistantId = messageId()
     setMessages((current) => [
       ...current,
-      { id: messageId(), role: 'user', text },
+      { id: messageId(), role: 'user', text: text || 'Photo', media: mediaForMessage },
       {
         id: assistantId,
         role: 'assistant',
@@ -599,23 +725,24 @@ export default function HomeScreen() {
         activity: PENDING_ACTIVITY,
         isStreaming: true,
       },
-    ]);
+    ])
 
     function updateAssistant(updater: (message: Message) => Message) {
       setMessages((current) =>
         current.map((message) => (message.id === assistantId ? updater(message) : message)),
-      );
+      )
     }
 
     try {
       await streamCommandRequest({
         connection,
         text,
+        media: mediaForRequest,
         onActivity: (step) => {
           updateAssistant((message) => ({
             ...message,
             activity: mergeActivity(message.activity, step),
-          }));
+          }))
         },
         onReply: (reply, activity) => {
           updateAssistant((message) => ({
@@ -623,21 +750,21 @@ export default function HomeScreen() {
             text: reply,
             activity: activity ?? message.activity,
             isStreaming: false,
-          }));
+          }))
         },
-      });
+      })
 
-      updateAssistant((message) => ({ ...message, isStreaming: false }));
+      updateAssistant((message) => ({ ...message, isStreaming: false }))
     } catch (err) {
       const message =
         err instanceof TypeError
           ? 'Server unreachable. Check the URL and network connection.'
           : err instanceof Error && err.name === 'AbortError'
             ? 'compoota is taking too long to respond. Try again in a moment.'
-          : err instanceof Error
-            ? err.message
-            : 'Command failed.';
-      setError(message);
+            : err instanceof Error
+              ? err.message
+              : 'Command failed.'
+      setError(message)
       updateAssistant((current) => ({
         ...current,
         text: current.text || message,
@@ -648,19 +775,92 @@ export default function HomeScreen() {
           at: new Date().toISOString(),
         }),
         isStreaming: false,
-      }));
+      }))
     } finally {
-      setBusy(false);
+      setBusy(false)
+    }
+  }
+
+  async function pickMedia(source: 'camera' | 'library') {
+    setMediaSheetVisible(false)
+    setError('')
+
+    try {
+      const permission =
+        source === 'camera'
+          ? await ImagePicker.requestCameraPermissionsAsync()
+          : await ImagePicker.requestMediaLibraryPermissionsAsync()
+
+      if (!permission.granted) {
+        setError(
+          source === 'camera'
+            ? 'Camera access is needed to take a photo.'
+            : 'Photo library access is needed to choose a photo.',
+        )
+        return
+      }
+
+      const result =
+        source === 'camera'
+          ? await ImagePicker.launchCameraAsync({
+              base64: true,
+              mediaTypes: ['images'],
+              quality: 0.82,
+            })
+          : await ImagePicker.launchImageLibraryAsync({
+              base64: true,
+              mediaTypes: ['images'],
+              quality: 0.82,
+              selectionLimit: 1,
+            })
+
+      if (result.canceled) {
+        return
+      }
+
+      const asset = result.assets[0]
+      if (!asset?.base64) {
+        setError('That photo could not be prepared for upload.')
+        return
+      }
+
+      setPendingMedia([
+        {
+          id: messageId(),
+          uri: asset.uri,
+          base64: asset.base64,
+          mimeType: asset.mimeType || 'image/jpeg',
+          fileName: asset.fileName ?? undefined,
+          width: asset.width,
+          height: asset.height,
+        },
+      ])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Photo picker failed.')
     }
   }
 
   async function resetConnection() {
-    await AsyncStorage.removeItem(STORAGE_KEY);
-    closeSidebar();
-    setConnection(null);
-    setCommand('');
-    setError('');
-    setMessages([]);
+    await AsyncStorage.removeItem(STORAGE_KEY)
+    closeSidebar()
+    setConnection(null)
+    setCommand('')
+    setPendingMedia([])
+    setError('')
+    setMessages([])
+  }
+
+  async function startFreshChat() {
+    if (connection) {
+      await AsyncStorage.removeItem(messageHistoryKey(connection.deviceId))
+    }
+    Keyboard.dismiss()
+    setError('')
+    setCommand('')
+    setPendingMedia([])
+    setSelectedActivityMessageId(null)
+    setMessages([])
+    scrollRef.current?.scrollTo({ y: 0, animated: true })
   }
 
   if (loading) {
@@ -668,7 +868,7 @@ export default function HomeScreen() {
       <SafeAreaView style={styles.loading}>
         <ActivityIndicator color={colors.text} />
       </SafeAreaView>
-    );
+    )
   }
 
   if (!connection) {
@@ -676,7 +876,8 @@ export default function HomeScreen() {
       <SafeAreaView style={styles.screen}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.keyboard}>
+          style={styles.keyboard}
+        >
           <View style={styles.connectPage}>
             <View style={styles.connectContent}>
               <Text style={styles.connectTitle}>compoota</Text>
@@ -730,10 +931,8 @@ export default function HomeScreen() {
                 <Pressable
                   disabled={busy}
                   onPress={connect}
-                  style={({ pressed }) => [
-                    styles.connectButton,
-                    (pressed || busy) && styles.pressed,
-                  ]}>
+                  style={({ pressed }) => [styles.connectButton, (pressed || busy) && styles.pressed]}
+                >
                   {busy ? (
                     <ActivityIndicator color={colors.actionText} />
                   ) : (
@@ -745,7 +944,7 @@ export default function HomeScreen() {
           </View>
         </KeyboardAvoidingView>
       </SafeAreaView>
-    );
+    )
   }
 
   return (
@@ -753,11 +952,8 @@ export default function HomeScreen() {
       <View style={styles.sidebarStage}>
         <Animated.View
           pointerEvents={sidebarOpen ? 'auto' : 'none'}
-          style={[
-            styles.sidebarUnderlay,
-            { width: sidebarOpenDistance },
-            sidebarUnderlayStyle,
-          ]}>
+          style={[styles.sidebarUnderlay, { width: sidebarOpenDistance }, sidebarUnderlayStyle]}
+        >
           <View style={styles.sidebarPanel}>
             <View style={styles.sidebarTop}>
               <Text style={styles.sidebarTitle}>compoota</Text>
@@ -769,7 +965,8 @@ export default function HomeScreen() {
             <View style={styles.sidebarFooter}>
               <Pressable
                 onPress={resetConnection}
-                style={({ pressed }) => [styles.sidebarLogout, pressed && styles.pressed]}>
+                style={({ pressed }) => [styles.sidebarLogout, pressed && styles.pressed]}
+              >
                 <Text style={styles.sidebarLogoutText}>logout</Text>
               </Pressable>
             </View>
@@ -779,102 +976,177 @@ export default function HomeScreen() {
         <GestureDetector gesture={sidebarPanGesture}>
           <Animated.View style={[styles.mainPanel, sidebarMainStyle]}>
             <SafeAreaView style={styles.chatSafeArea}>
-              <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-                style={styles.keyboard}>
-                <View style={styles.chatShell}>
-                <Pressable
-                  accessibilityLabel="Open sidebar"
-                  onPress={openSidebar}
-                  style={({ pressed }) => [styles.sidebarButton, pressed && styles.pressed]}>
-                  <View style={styles.sidebarGlyph}>
-                    <View style={styles.sidebarGlyphLine} />
-                    <View style={[styles.sidebarGlyphLine, styles.sidebarGlyphLineShort]} />
-                  </View>
-                </Pressable>
+              <View style={styles.chatShell}>
+                <View style={styles.topButtons}>
+                  <Pressable
+                    accessibilityLabel="Open sidebar"
+                    onPress={openSidebar}
+                    style={({ pressed }) => [styles.topIconButton, pressed && styles.pressed]}
+                  >
+                    <View style={styles.sidebarGlyph}>
+                      <View style={styles.sidebarGlyphLine} />
+                      <View style={[styles.sidebarGlyphLine, styles.sidebarGlyphLineShort]} />
+                    </View>
+                  </Pressable>
+
+                  <Pressable
+                    accessibilityLabel="Start new chat"
+                    onPress={startFreshChat}
+                    style={({ pressed }) => [styles.topIconButton, pressed && styles.pressed]}
+                  >
+                    <View style={styles.newChatGlyph}>
+                      <View style={styles.newChatGlyphHorizontal} />
+                      <View style={styles.newChatGlyphVertical} />
+                    </View>
+                  </Pressable>
+                </View>
 
                 <ScrollView
                   ref={scrollRef}
                   contentContainerStyle={styles.messagesContent}
+                  keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
                   keyboardShouldPersistTaps="handled"
-                  style={styles.messages}>
-                  {messages.filter((message) => message.text || message.activity?.length).map((message) => (
-                    <View
-                      key={message.id}
-                      style={[
-                        styles.messageRow,
-                        message.role === 'user' && styles.userMessageRow,
-                      ]}>
+                  style={styles.messages}
+                >
+                  {messages
+                    .filter((message) => message.text || message.media?.length || message.activity?.length)
+                    .map((message) => (
                       <View
-                        style={[
-                          styles.message,
-                          message.role === 'user' && styles.userMessage,
-                        ]}>
-                        {message.role === 'assistant' && message.activity?.length ? (
-                          <Pressable
-                            onPress={() => setSelectedActivityMessageId(message.id)}
-                            style={({ pressed }) => [
-                              styles.activityLine,
-                              pressed && styles.activityLinePressed,
-                            ]}>
-                            <View style={styles.activityLineTextWrap}>
-                              <Text numberOfLines={1} style={styles.activityLineTitle}>
-                                {activityStatusText(message)}
-                              </Text>
+                        key={message.id}
+                        style={[styles.messageRow, message.role === 'user' && styles.userMessageRow]}
+                      >
+                        <View style={[styles.message, message.role === 'user' && styles.userMessage]}>
+                          {message.role === 'assistant' && message.activity?.length ? (
+                            <Pressable
+                              onPress={() => setSelectedActivityMessageId(message.id)}
+                              style={({ pressed }) => [
+                                styles.activityLine,
+                                pressed && styles.activityLinePressed,
+                              ]}
+                            >
+                              <View style={styles.activityLineTextWrap}>
+                                <Text numberOfLines={1} style={styles.activityLineTitle}>
+                                  {activityStatusText(message)}
+                                </Text>
+                              </View>
+                            </Pressable>
+                          ) : null}
+                          {message.media?.length ? (
+                            <View style={styles.messageMediaGrid}>
+                              {message.media.map((item) => (
+                                <Image
+                                  key={item.id}
+                                  accessibilityLabel="Uploaded photo"
+                                  resizeMode="cover"
+                                  source={{ uri: item.uri }}
+                                  style={styles.messageImage}
+                                />
+                              ))}
                             </View>
-                          </Pressable>
-                        ) : null}
-                        {message.text ? (
-                          <Text
-                            style={[
-                              styles.messageText,
-                              message.role === 'assistant' &&
-                                Boolean(message.activity?.length) &&
-                                styles.assistantResponseText,
-                              message.role === 'user' && styles.userMessageText,
-                            ]}>
-                            {message.text}
-                          </Text>
-                        ) : null}
+                          ) : null}
+                          {message.text ? (
+                            <Text
+                              style={[
+                                styles.messageText,
+                                message.role === 'assistant' &&
+                                  Boolean(message.activity?.length) &&
+                                  styles.assistantResponseText,
+                                message.role === 'user' && styles.userMessageText,
+                              ]}
+                            >
+                              {message.text}
+                            </Text>
+                          ) : null}
+                        </View>
                       </View>
-                    </View>
-                  ))}
+                    ))}
                 </ScrollView>
 
                 {error ? <Text style={styles.chatError}>{error}</Text> : null}
 
                 <View style={styles.composerWrap}>
-                  <View style={[styles.composer, composerFocused && styles.composerFocused]}>
-                    <TextInput
-                      keyboardAppearance={isDark ? 'dark' : 'light'}
-                      onBlur={() => setComposerFocused(false)}
-                      onChangeText={setCommand}
-                      onFocus={() => setComposerFocused(true)}
-                      onSubmitEditing={Platform.OS === 'web' ? sendCommand : undefined}
-                      placeholder="compoota..."
-                      placeholderTextColor={colors.placeholder}
-                      returnKeyType="default"
-                      selectionColor={colors.selection}
-                      style={styles.commandInput}
-                      value={command}
-                    />
-                    <Pressable
-                      disabled={busy}
-                      onPress={sendCommand}
-                      style={({ pressed }) => [
-                        styles.sendButton,
-                        (pressed || busy) && styles.pressed,
-                      ]}>
-                      {busy ? (
-                        <Text style={styles.busyText}>...</Text>
-                      ) : (
-                        <Text style={styles.sendIcon}>↑</Text>
-                      )}
-                    </Pressable>
-                  </View>
+                  <Pressable
+                    accessibilityLabel="Add photo"
+                    disabled={busy}
+                    onPress={() => setMediaSheetVisible(true)}
+                    style={({ pressed }) => [
+                      styles.attachButtonHitbox,
+                      (pressed || busy) && styles.glassPressed,
+                    ]}
+                  >
+                    <GlassSurface
+                      colorScheme={isDark ? 'dark' : 'light'}
+                      enabled={liquidGlassEnabled}
+                      isInteractive
+                      style={styles.attachButton}
+                      tintColor={colors.glassTint}
+                    >
+                      <Text style={styles.attachIcon}>+</Text>
+                    </GlassSurface>
+                  </Pressable>
+
+                  <GlassSurface
+                    colorScheme={isDark ? 'dark' : 'light'}
+                    enabled={liquidGlassEnabled}
+                    isInteractive
+                    style={[styles.composer, composerFocused && styles.composerFocused]}
+                    tintColor={colors.glassTint}
+                  >
+                    {pendingMedia.length ? (
+                      <View style={styles.pendingMediaStrip}>
+                        {pendingMedia.map((item) => (
+                          <View key={item.id} style={styles.pendingMediaItem}>
+                            <Image
+                              accessibilityLabel="Selected photo"
+                              resizeMode="cover"
+                              source={{ uri: item.uri }}
+                              style={styles.pendingMediaImage}
+                            />
+                            <Pressable
+                              accessibilityLabel="Remove selected photo"
+                              onPress={() => setPendingMedia([])}
+                              style={({ pressed }) => [styles.removeMediaButton, pressed && styles.pressed]}
+                            >
+                              <View style={styles.removeMediaGlyph}>
+                                <View style={[styles.removeMediaGlyphLine, styles.removeMediaGlyphLineA]} />
+                                <View style={[styles.removeMediaGlyphLine, styles.removeMediaGlyphLineB]} />
+                              </View>
+                            </Pressable>
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
+                    <View style={styles.composerInputRow}>
+                      <TextInput
+                        keyboardAppearance={isDark ? 'dark' : 'light'}
+                        multiline
+                        onBlur={() => setComposerFocused(false)}
+                        onChangeText={setCommand}
+                        onFocus={() => setComposerFocused(true)}
+                        onSubmitEditing={sendCommand}
+                        placeholder="Ask compoota"
+                        placeholderTextColor={colors.placeholder}
+                        returnKeyType="default"
+                        selectionColor={colors.selection}
+                        style={styles.commandInput}
+                        value={command}
+                      />
+                      <Pressable
+                        accessibilityLabel="Send message"
+                        disabled={busy}
+                        onPress={sendCommand}
+                        style={({ pressed }) => [styles.sendButton, (pressed || busy) && styles.pressed]}
+                      >
+                        {busy ? (
+                          <Text style={styles.busyText}>...</Text>
+                        ) : (
+                          <Text style={styles.sendIcon}>↑</Text>
+                        )}
+                      </Pressable>
+                    </View>
+                  </GlassSurface>
                 </View>
-                </View>
-              </KeyboardAvoidingView>
+              </View>
             </SafeAreaView>
             {sidebarOpen ? (
               <Pressable
@@ -887,10 +1159,41 @@ export default function HomeScreen() {
         </GestureDetector>
       </View>
       <Modal
+        animationType="fade"
+        onRequestClose={() => setMediaSheetVisible(false)}
+        transparent
+        visible={mediaSheetVisible}
+      >
+        <View style={styles.mediaModalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setMediaSheetVisible(false)} />
+          <View style={styles.mediaSheet}>
+            <Pressable
+              onPress={() => pickMedia('camera')}
+              style={({ pressed }) => [styles.mediaSheetAction, pressed && styles.pressed]}
+            >
+              <Text style={styles.mediaSheetActionText}>Take Photo</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => pickMedia('library')}
+              style={({ pressed }) => [styles.mediaSheetAction, pressed && styles.pressed]}
+            >
+              <Text style={styles.mediaSheetActionText}>Choose From Library</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setMediaSheetVisible(false)}
+              style={({ pressed }) => [styles.mediaSheetCancel, pressed && styles.pressed]}
+            >
+              <Text style={styles.mediaSheetCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+      <Modal
         animationType="slide"
         onRequestClose={() => setSelectedActivityMessageId(null)}
         transparent
-        visible={Boolean(selectedActivityMessage?.activity?.length)}>
+        visible={Boolean(selectedActivityMessage?.activity?.length)}
+      >
         <View style={styles.modalRoot}>
           <Pressable style={styles.modalBackdrop} onPress={() => setSelectedActivityMessageId(null)} />
           <View style={styles.sheet}>
@@ -915,7 +1218,8 @@ export default function HomeScreen() {
                     step.status === 'done' &&
                       index < (selectedActivityMessage.activity?.length ?? 0) - 1 &&
                       styles.sheetStepQuiet,
-                  ]}>
+                  ]}
+                >
                   <View
                     style={[
                       styles.sheetStepDot,
@@ -936,7 +1240,7 @@ export default function HomeScreen() {
         </View>
       </Modal>
     </View>
-  );
+  )
 }
 
 function createColors(isDark: boolean) {
@@ -951,15 +1255,23 @@ function createColors(isDark: boolean) {
     selection: isDark ? '#ffffff' : '#111111',
     action: isDark ? '#ffffff' : '#0b0b0b',
     actionText: isDark ? '#111111' : '#ffffff',
+    glassTint: isDark ? 'rgba(24,24,24,0.62)' : 'rgba(255,255,255,0.58)',
     userBubble: isDark ? '#eeeeea' : '#161616',
     userText: isDark ? '#111111' : '#ffffff',
     error: '#d93d3d',
-  };
+  }
 }
 
-function createStyles(isDark: boolean, bottomInset: number) {
-  const colors = createColors(isDark);
-  const shadowColor = isDark ? '#000000' : '#6f6f68';
+function createStyles(
+  isDark: boolean,
+  insets: { top: number; bottom: number },
+  composerBottom: number,
+  liquidGlassEnabled: boolean,
+) {
+  const colors = createColors(isDark)
+  const shadowColor = isDark ? '#000000' : '#6f6f68'
+  const bottomInset = insets.bottom
+  const topInset = insets.top
 
   return StyleSheet.create({
     screen: {
@@ -1049,6 +1361,9 @@ function createStyles(isDark: boolean, bottomInset: number) {
     pressed: {
       opacity: 0.62,
     },
+    glassPressed: {
+      transform: [{ scale: 0.97 }],
+    },
     sidebarStage: {
       flex: 1,
       backgroundColor: isDark ? '#050505' : '#f4f2ee',
@@ -1072,14 +1387,20 @@ function createStyles(isDark: boolean, bottomInset: number) {
       flex: 1,
       backgroundColor: colors.background,
     },
-    sidebarButton: {
+    topButtons: {
       position: 'absolute',
       top: 8,
-      left: 18,
+      left: 16,
+      right: 16,
       zIndex: 3,
-      width: 52,
-      height: 52,
-      borderRadius: 26,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      pointerEvents: 'box-none',
+    },
+    topIconButton: {
+      width: 46,
+      height: 46,
+      borderRadius: 23,
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: isDark ? 'rgba(33,33,33,0.74)' : 'rgba(255,255,255,0.74)',
@@ -1090,13 +1411,33 @@ function createStyles(isDark: boolean, bottomInset: number) {
       shadowRadius: 18,
       shadowOffset: { width: 0, height: 10 },
     },
+    newChatGlyph: {
+      width: 19,
+      height: 19,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    newChatGlyphHorizontal: {
+      position: 'absolute',
+      width: 19,
+      height: 2.25,
+      borderRadius: 2,
+      backgroundColor: colors.text,
+    },
+    newChatGlyphVertical: {
+      position: 'absolute',
+      width: 2.25,
+      height: 19,
+      borderRadius: 2,
+      backgroundColor: colors.text,
+    },
     sidebarGlyph: {
-      width: 22,
-      gap: 7,
+      width: 20,
+      gap: 6,
     },
     sidebarGlyphLine: {
-      width: 22,
-      height: 2.5,
+      width: 20,
+      height: 2.25,
       borderRadius: 2,
       backgroundColor: colors.text,
     },
@@ -1158,9 +1499,9 @@ function createStyles(isDark: boolean, bottomInset: number) {
       flex: 1,
     },
     messagesContent: {
-      paddingTop: 84,
+      paddingTop: Math.max(topInset + 78, 108),
       paddingHorizontal: 20,
-      paddingBottom: 118 + Math.max(bottomInset, 10),
+      paddingBottom: composerBottom + 118,
       gap: 24,
     },
     messageRow: {
@@ -1210,6 +1551,16 @@ function createStyles(isDark: boolean, bottomInset: number) {
       fontSize: 17,
       lineHeight: 25,
     },
+    messageMediaGrid: {
+      gap: 8,
+      marginBottom: 8,
+    },
+    messageImage: {
+      width: 210,
+      height: 210,
+      borderRadius: 16,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    },
     assistantResponseText: {
       marginTop: 2,
     },
@@ -1222,7 +1573,7 @@ function createStyles(isDark: boolean, bottomInset: number) {
       position: 'absolute',
       left: 24,
       right: 24,
-      bottom: 94 + Math.max(bottomInset, 10),
+      bottom: composerBottom + 86,
       color: colors.error,
       textAlign: 'center',
       fontSize: 13,
@@ -1235,6 +1586,47 @@ function createStyles(isDark: boolean, bottomInset: number) {
     modalBackdrop: {
       ...StyleSheet.absoluteFillObject,
       backgroundColor: isDark ? 'rgba(0,0,0,0.06)' : 'rgba(0,0,0,0.03)',
+    },
+    mediaModalRoot: {
+      flex: 1,
+      justifyContent: 'flex-end',
+    },
+    mediaSheet: {
+      marginHorizontal: 14,
+      marginBottom: Math.max(bottomInset, 14) + 8,
+      borderRadius: 22,
+      padding: 8,
+      gap: 7,
+      backgroundColor: isDark ? '#1d1d1d' : '#ffffff',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      shadowColor,
+      shadowOpacity: 0.16,
+      shadowRadius: 24,
+      shadowOffset: { width: 0, height: 10 },
+    },
+    mediaSheetAction: {
+      height: 50,
+      borderRadius: 16,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.045)',
+    },
+    mediaSheetActionText: {
+      color: colors.text,
+      fontSize: 16,
+      fontWeight: '700',
+    },
+    mediaSheetCancel: {
+      height: 50,
+      borderRadius: 16,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    mediaSheetCancelText: {
+      color: colors.secondaryText,
+      fontSize: 16,
+      fontWeight: '600',
     },
     sheet: {
       maxHeight: '74%',
@@ -1338,55 +1730,153 @@ function createStyles(isDark: boolean, bottomInset: number) {
       position: 'absolute',
       left: 16,
       right: 16,
-      bottom: Math.max(bottomInset, 12),
+      bottom: composerBottom,
       zIndex: 4,
-      borderRadius: 31,
+      flexDirection: 'row',
+      alignItems: 'flex-end',
+      gap: 10,
       shadowColor,
-      shadowOpacity: 0.18,
-      shadowRadius: 28,
-      shadowOffset: { width: 0, height: 16 },
+      shadowOpacity: isDark ? 0.18 : 0.12,
+      shadowRadius: 20,
+      shadowOffset: { width: 0, height: 10 },
     },
     composer: {
-      minHeight: 62,
-      borderRadius: 31,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      paddingLeft: 20,
-      paddingRight: 8,
+      flex: 1,
+      minWidth: 0,
+      minHeight: 54,
+      borderRadius: 27,
+      gap: 8,
+      paddingHorizontal: 10,
       paddingVertical: 8,
-      backgroundColor: isDark ? '#202020' : '#ffffff',
+      backgroundColor: liquidGlassEnabled
+        ? 'transparent'
+        : isDark
+          ? 'rgba(24,24,24,0.92)'
+          : 'rgba(255,255,255,0.92)',
       borderWidth: StyleSheet.hairlineWidth,
-      borderColor: isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.08)',
+      borderColor: liquidGlassEnabled
+        ? isDark
+          ? 'rgba(255,255,255,0.22)'
+          : 'rgba(255,255,255,0.72)'
+        : isDark
+          ? 'rgba(255,255,255,0.14)'
+          : 'rgba(0,0,0,0.12)',
     },
     composerFocused: {
-      borderColor: isDark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.16)',
+      borderColor: isDark ? 'rgba(255,255,255,0.20)' : 'rgba(0,0,0,0.18)',
+    },
+    composerInputRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-end',
+      gap: 8,
     },
     commandInput: {
       flex: 1,
-      height: 44,
+      minHeight: 38,
+      maxHeight: 118,
       color: colors.text,
-      paddingHorizontal: 0,
-      paddingTop: 0,
-      paddingBottom: 0,
+      paddingHorizontal: 8,
+      paddingTop: 9,
+      paddingBottom: 9,
       fontSize: 17,
-      lineHeight: 20,
+      lineHeight: 21,
+      textAlignVertical: 'top',
+    },
+    pendingMediaStrip: {
+      flexDirection: 'row',
+      paddingHorizontal: 6,
+      paddingTop: 2,
+    },
+    pendingMediaItem: {
+      width: 72,
+      height: 72,
+    },
+    pendingMediaImage: {
+      width: 72,
+      height: 72,
+      borderRadius: 14,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    },
+    removeMediaButton: {
+      position: 'absolute',
+      top: -6,
+      right: -6,
+      width: 24,
+      height: 24,
+      borderRadius: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.action,
+      borderWidth: 2,
+      borderColor: isDark ? '#181818' : '#ffffff',
+    },
+    removeMediaGlyph: {
+      width: 12,
+      height: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    removeMediaGlyphLine: {
+      position: 'absolute',
+      width: 13,
+      height: 2,
+      borderRadius: 1,
+      backgroundColor: colors.actionText,
+    },
+    removeMediaGlyphLineA: {
+      transform: [{ rotate: '45deg' }],
+    },
+    removeMediaGlyphLineB: {
+      transform: [{ rotate: '-45deg' }],
+    },
+    attachButtonHitbox: {
+      width: 52,
+      height: 52,
+      borderRadius: 26,
+    },
+    attachButton: {
+      flex: 1,
+      borderRadius: 26,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: liquidGlassEnabled
+        ? 'transparent'
+        : isDark
+          ? 'rgba(24,24,24,0.92)'
+          : 'rgba(255,255,255,0.92)',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: liquidGlassEnabled
+        ? isDark
+          ? 'rgba(255,255,255,0.22)'
+          : 'rgba(255,255,255,0.72)'
+        : isDark
+          ? 'rgba(255,255,255,0.14)'
+          : 'rgba(0,0,0,0.12)',
+    },
+    attachIcon: {
+      color: colors.text,
+      width: 52,
+      height: 52,
+      fontSize: 38,
+      fontWeight: '300',
+      lineHeight: 48,
+      textAlign: 'center',
     },
     sendButton: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
+      width: 36,
+      height: 36,
+      borderRadius: 21,
       backgroundColor: colors.action,
       alignItems: 'center',
       justifyContent: 'center',
     },
     sendIcon: {
       color: colors.actionText,
-      width: 44,
-      height: 44,
-      fontSize: 30,
+      width: 42,
+      height: 42,
+      fontSize: 25,
       fontWeight: '800',
-      lineHeight: 41,
+      lineHeight: 36,
       textAlign: 'center',
     },
     busyText: {
@@ -1395,5 +1885,5 @@ function createStyles(isDark: boolean, bottomInset: number) {
       fontWeight: '900',
       letterSpacing: 0,
     },
-  });
+  })
 }

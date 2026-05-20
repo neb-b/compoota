@@ -55,9 +55,21 @@ export function openDatabase(databasePath: string): Database.Database {
       FOREIGN KEY (device_id) REFERENCES devices(id)
     );
 
+    CREATE TABLE IF NOT EXISTS media (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      original_name TEXT,
+      byte_size INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (device_id) REFERENCES devices(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_pairing_codes_code_hash ON pairing_codes(code_hash);
     CREATE INDEX IF NOT EXISTS idx_devices_token_hash ON devices(token_hash);
     CREATE INDEX IF NOT EXISTS idx_audit_log_device_id ON audit_log(device_id);
+    CREATE INDEX IF NOT EXISTS idx_media_device_id ON media(device_id);
   `);
 
   return db;

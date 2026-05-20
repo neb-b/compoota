@@ -2,6 +2,8 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import type Database from "better-sqlite3";
 import { AuthError, verifyDeviceToken, verifySetupSecret } from "./auth.js";
@@ -18,8 +20,22 @@ const pairSchema = z.object({
 });
 
 const commandSchema = z.object({
-  text: z.string().trim().min(1).max(2000)
+  text: z.string().trim().max(2000),
+  media: z
+    .array(
+      z.object({
+        base64: z.string().min(1),
+        mimeType: z.string().trim().regex(/^image\/(jpeg|jpg|png|webp|heic|heif)$/i),
+        fileName: z.string().trim().max(160).optional()
+      })
+    )
+    .max(1)
+    .optional()
+}).refine((body) => body.text.length > 0 || (body.media?.length ?? 0) > 0, {
+  message: "Text or media is required"
 });
+
+type CommandBody = z.infer<typeof commandSchema>;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -76,10 +92,85 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed";
 }
 
+function mediaExtension(mimeType: string): string {
+  const normalized = mimeType.toLowerCase();
+  if (normalized.includes("png")) {
+    return "png";
+  }
+  if (normalized.includes("webp")) {
+    return "webp";
+  }
+  if (normalized.includes("heic")) {
+    return "heic";
+  }
+  if (normalized.includes("heif")) {
+    return "heif";
+  }
+
+  return "jpg";
+}
+
+function saveCommandMedia(
+  body: CommandBody,
+  deviceId: string,
+  db: Database.Database,
+  config: Config,
+  createdAt: string
+): Array<{ id: string; path: string; mimeType: string; originalName?: string; byteSize: number }> {
+  if (!body.media?.length) {
+    return [];
+  }
+
+  mkdirSync(config.mediaStorageDirectory, { recursive: true });
+
+  return body.media.map((item) => {
+    const id = randomUUID();
+    const buffer = Buffer.from(item.base64, "base64");
+    if (buffer.length === 0) {
+      throw httpError("Uploaded image was empty", 400);
+    }
+    if (buffer.length > 8 * 1024 * 1024) {
+      throw httpError("Uploaded image is too large", 413);
+    }
+
+    const filePath = join(config.mediaStorageDirectory, `${id}.${mediaExtension(item.mimeType)}`);
+    writeFileSync(filePath, buffer, { mode: 0o600 });
+    db.prepare(
+      "INSERT INTO media (id, device_id, file_path, mime_type, original_name, byte_size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run(id, deviceId, filePath, item.mimeType, item.fileName ?? null, buffer.length, createdAt);
+
+    return {
+      id,
+      path: filePath,
+      mimeType: item.mimeType,
+      originalName: item.fileName,
+      byteSize: buffer.length
+    };
+  });
+}
+
+function buildHermesText(text: string, media: Array<{ id: string; path: string; mimeType: string }>): string {
+  const trimmed = text.trim();
+  if (media.length === 0) {
+    return trimmed;
+  }
+
+  const mediaContext = media
+    .map((item, index) => `Image ${index + 1}: media_id=${item.id}, mime_type=${item.mimeType}, stored_path=${item.path}`)
+    .join("\n");
+
+  return [
+    trimmed || "Please analyze this uploaded photo.",
+    "",
+    "The user attached photo media. Use the attached image directly if your current model supports vision. If anything is worth remembering, attach the memory to the media_id and stored_path below so the memory can point back to its source.",
+    mediaContext
+  ].join("\n");
+}
+
 function createServer(config: Config, db: Database.Database) {
   const app = Fastify({
     logger: true,
-    bodyLimit: 16 * 1024
+    bodyLimit: 12 * 1024 * 1024
   });
 
   app.register(cors, { origin: config.allowedOrigins.length > 0 ? config.allowedOrigins : true });
@@ -220,11 +311,16 @@ function createServer(config: Config, db: Database.Database) {
     const device = verifyDeviceToken(request, db, config);
     const body = validateBody(commandSchema, request.body);
     const createdAt = nowIso();
+    const media = saveCommandMedia(body, device.id, db, config, createdAt);
+    const hermesText = buildHermesText(body.text, media);
     const activity: CommandActivity[] = [
       commandActivity("compoota.server.received", "House-server received the message"),
       commandActivity("compoota.server.auth", "Device token checked out", `Device: ${device.name}`)
     ];
-    const result = await runHermesCommand(body.text, config);
+    if (media.length > 0) {
+      activity.push(commandActivity("compoota.server.media", "Stored attached photo", media[0].path));
+    }
+    const result = await runHermesCommand(hermesText, config, { imagePaths: media.map((item) => item.path) });
     const fullActivity = [...activity, ...result.activity];
 
     db.prepare(
@@ -233,7 +329,7 @@ function createServer(config: Config, db: Database.Database) {
       randomUUID(),
       device.id,
       config.hermesCommandMode === "oneshot" ? "command.hermes" : "command.mock",
-      JSON.stringify({ text: body.text, activity: fullActivity }),
+      JSON.stringify({ text: body.text, media, activity: fullActivity }),
       createdAt
     );
 
@@ -255,6 +351,8 @@ function createServer(config: Config, db: Database.Database) {
     const body = validateBody(commandSchema, request.body);
     const createdAt = nowIso();
     const runId = randomUUID();
+    const media = saveCommandMedia(body, device.id, db, config, createdAt);
+    const hermesText = buildHermesText(body.text, media);
     const activity: CommandActivity[] = [];
 
     reply.raw.writeHead(200, {
@@ -275,10 +373,14 @@ function createServer(config: Config, db: Database.Database) {
 
     emit(commandActivity("compoota.server.received", "House-server received the message"));
     emit(commandActivity("compoota.server.auth", "Device token checked out", `Device: ${device.name}`));
+    for (const item of media) {
+      emit(commandActivity("compoota.server.media", "Stored attached photo", item.path));
+    }
 
     try {
-      const result = await runHermesCommand(body.text, config, {
+      const result = await runHermesCommand(hermesText, config, {
         runId,
+        imagePaths: media.map((item) => item.path),
         onActivity: emit
       });
 
@@ -288,7 +390,7 @@ function createServer(config: Config, db: Database.Database) {
         randomUUID(),
         device.id,
         config.hermesCommandMode === "oneshot" ? "command.hermes" : "command.mock",
-        JSON.stringify({ text: body.text, activity, streamed: true, runId }),
+        JSON.stringify({ text: body.text, media, activity, streamed: true, runId }),
         createdAt
       );
 

@@ -1,6 +1,7 @@
 export type Config = {
   port: number;
   databasePath: string;
+  mediaStorageDirectory: string;
   houseSetupSecret: string;
   pairingCodeTtlMinutes: number;
   tokenHashSecret: string;
@@ -66,6 +67,7 @@ export function loadConfig(): Config {
   return {
     port: readNumber("PORT", 8787),
     databasePath: readString("DATABASE_PATH", "./house.db"),
+    mediaStorageDirectory: readString("MEDIA_STORAGE_DIRECTORY", "./media"),
     houseSetupSecret: readString("HOUSE_SETUP_SECRET", "change-this-long-random-string"),
     pairingCodeTtlMinutes: readNumber("PAIRING_CODE_TTL_MINUTES", 10),
     tokenHashSecret: readString("TOKEN_HASH_SECRET", "change-this-too"),
