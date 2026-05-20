@@ -56,6 +56,7 @@ type MessageMedia = {
   id: string
   uri?: string
   serverId?: string
+  remoteUrl?: string | null
   mimeType: string
   fileName?: string
   width?: number
@@ -298,6 +299,10 @@ function mediaImageSource(media: MessageMedia, connection: Connection): ImageSou
     return { uri: media.uri }
   }
 
+  if (media.remoteUrl) {
+    return { uri: media.remoteUrl }
+  }
+
   return {
     uri: `${connection.serverUrl}/media/${media.serverId}`,
     headers: {
@@ -366,7 +371,7 @@ function streamCommandRequest({
           onActivity(parsed.data as ActivityStep)
         } else if (parsed.event === 'media') {
           const data = parsed.data as {
-            media?: Array<{ id?: string; mimeType?: string; fileName?: string }>
+            media?: Array<{ id?: string; mimeType?: string; fileName?: string; remoteUrl?: string | null }>
           }
           const storedMedia = Array.isArray(data.media)
             ? data.media
@@ -374,6 +379,7 @@ function streamCommandRequest({
                 .map((item) => ({
                   id: item.id as string,
                   serverId: item.id,
+                  remoteUrl: item.remoteUrl,
                   mimeType: item.mimeType as string,
                   fileName: item.fileName,
                 }))
@@ -385,7 +391,7 @@ function streamCommandRequest({
           const data = parsed.data as {
             reply?: string
             activity?: ActivityStep[]
-            media?: Array<{ id?: string; mimeType?: string; fileName?: string }>
+            media?: Array<{ id?: string; mimeType?: string; fileName?: string; remoteUrl?: string | null }>
           }
           const replyMedia = Array.isArray(data.media)
             ? data.media
@@ -393,6 +399,7 @@ function streamCommandRequest({
                 .map((item) => ({
                   id: item.id as string,
                   serverId: item.id,
+                  remoteUrl: item.remoteUrl,
                   mimeType: item.mimeType as string,
                   fileName: item.fileName,
                 }))
@@ -1044,8 +1051,14 @@ export default function HomeScreen() {
             <SafeAreaView style={styles.chatSafeArea}>
               <View style={styles.chatShell}>
                 <LinearGradient
-                  colors={[colors.headerFade, colors.headerFade, colors.transparent]}
-                  locations={[0, 0.55, 1]}
+                  colors={[
+                    colors.headerFadeStrong,
+                    colors.headerFadeMedium,
+                    colors.headerFadeSoft,
+                    colors.headerFadeFaint,
+                    colors.transparent,
+                  ]}
+                  locations={[0, 0.2, 0.48, 0.76, 1]}
                   pointerEvents="none"
                   style={styles.topFade}
                 />
@@ -1348,7 +1361,10 @@ function createColors(isDark: boolean) {
     action: isDark ? '#ffffff' : '#0b0b0b',
     actionText: isDark ? '#111111' : '#ffffff',
     glassTint: isDark ? 'rgba(24,24,24,0.62)' : 'rgba(255,255,255,0.58)',
-    headerFade: isDark ? '#111111' : '#f8f8f7',
+    headerFadeStrong: isDark ? 'rgba(17,17,17,0.98)' : 'rgba(248,248,247,0.98)',
+    headerFadeMedium: isDark ? 'rgba(17,17,17,0.72)' : 'rgba(248,248,247,0.72)',
+    headerFadeSoft: isDark ? 'rgba(17,17,17,0.38)' : 'rgba(248,248,247,0.38)',
+    headerFadeFaint: isDark ? 'rgba(17,17,17,0.12)' : 'rgba(248,248,247,0.12)',
     transparent: isDark ? 'rgba(17,17,17,0)' : 'rgba(248,248,247,0)',
     userBubble: isDark ? '#eeeeea' : '#161616',
     userText: isDark ? '#111111' : '#ffffff',
@@ -1486,7 +1502,7 @@ function createStyles(
       top: 0,
       left: 0,
       right: 0,
-      height: 8,
+      height: 92,
       zIndex: 2,
     },
     topButtons: {

@@ -2,6 +2,12 @@ export type Config = {
   port: number;
   databasePath: string;
   mediaStorageDirectory: string;
+  r2AccountId: string | null;
+  r2AccessKeyId: string | null;
+  r2SecretAccessKey: string | null;
+  r2Bucket: string | null;
+  r2PublicBaseUrl: string | null;
+  r2KeyPrefix: string;
   houseSetupSecret: string;
   pairingCodeTtlMinutes: number;
   tokenHashSecret: string;
@@ -68,6 +74,12 @@ export function loadConfig(): Config {
     port: readNumber("PORT", 8787),
     databasePath: readString("DATABASE_PATH", "./house.db"),
     mediaStorageDirectory: readString("MEDIA_STORAGE_DIRECTORY", "./media"),
+    r2AccountId: readOptionalString("CLOUDFLARE_R2_ACCOUNT_ID"),
+    r2AccessKeyId: readOptionalString("CLOUDFLARE_R2_ACCESS_KEY_ID"),
+    r2SecretAccessKey: readOptionalString("CLOUDFLARE_R2_SECRET_ACCESS_KEY"),
+    r2Bucket: readOptionalString("CLOUDFLARE_R2_BUCKET"),
+    r2PublicBaseUrl: readOptionalString("CLOUDFLARE_R2_PUBLIC_BASE_URL"),
+    r2KeyPrefix: process.env.CLOUDFLARE_R2_KEY_PREFIX?.trim().replace(/^\/+|\/+$/g, "") || "compoota",
     houseSetupSecret: readString("HOUSE_SETUP_SECRET", "change-this-long-random-string"),
     pairingCodeTtlMinutes: readNumber("PAIRING_CODE_TTL_MINUTES", 10),
     tokenHashSecret: readString("TOKEN_HASH_SECRET", "change-this-too"),

@@ -40,6 +40,25 @@ If you also run the Cloudflare tunnel:
 ./restart-server.sh --tunnel
 ```
 
+Photo uploads stay local while Hermes analyzes them. If Cloudflare R2 is configured,
+the house-server uploads each analyzed photo to R2 after the agent returns and stores
+the R2 key/URL in SQLite.
+
+Set these in `.env` to enable R2:
+
+```sh
+CLOUDFLARE_R2_ACCOUNT_ID=your-account-id
+CLOUDFLARE_R2_ACCESS_KEY_ID=your-r2-access-key
+CLOUDFLARE_R2_SECRET_ACCESS_KEY=your-r2-secret-key
+CLOUDFLARE_R2_BUCKET=your-bucket-name
+CLOUDFLARE_R2_PUBLIC_BASE_URL=https://your-public-r2-domain.example.com
+CLOUDFLARE_R2_KEY_PREFIX=compoota
+```
+
+`CLOUDFLARE_R2_PUBLIC_BASE_URL` is optional. If it is set, the app can render
+images directly from R2. If it is omitted, the app uses the authenticated
+house-server `/media/:id` route.
+
 Health check:
 
 ```sh

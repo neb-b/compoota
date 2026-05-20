@@ -11,6 +11,7 @@ import { loadConfig, type Config } from "./config.js";
 import { createDeviceToken, createPairingCode, hashSecret } from "./crypto.js";
 import { openDatabase, type PairingCodeRow } from "./db.js";
 import { type CommandActivity, runHermesCommand } from "./hermes.js";
+import { uploadMediaToR2 } from "./r2.js";
 import { setupPageHtml } from "./setup-page.js";
 
 const pairSchema = z.object({
@@ -44,6 +45,10 @@ type MediaRow = {
   mime_type: string;
   original_name: string | null;
   byte_size: number;
+  r2_key: string | null;
+  r2_bucket: string | null;
+  remote_url: string | null;
+  uploaded_at: string | null;
   created_at: string;
 };
 
@@ -126,7 +131,7 @@ function saveCommandMedia(
   db: Database.Database,
   config: Config,
   createdAt: string
-): Array<{ id: string; path: string; mimeType: string; originalName?: string; byteSize: number }> {
+): Array<{ id: string; deviceId: string; path: string; mimeType: string; originalName?: string; byteSize: number; extension: string }> {
   if (!body.media?.length) {
     return [];
   }
@@ -143,7 +148,8 @@ function saveCommandMedia(
       throw httpError("Uploaded image is too large", 413);
     }
 
-    const filePath = join(config.mediaStorageDirectory, `${id}.${mediaExtension(item.mimeType)}`);
+    const extension = mediaExtension(item.mimeType);
+    const filePath = join(config.mediaStorageDirectory, `${id}.${extension}`);
     writeFileSync(filePath, buffer, { mode: 0o600 });
     db.prepare(
       "INSERT INTO media (id, device_id, file_path, mime_type, original_name, byte_size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -151,20 +157,23 @@ function saveCommandMedia(
 
     return {
       id,
+      deviceId,
       path: filePath,
       mimeType: item.mimeType,
       originalName: item.fileName,
-      byteSize: buffer.length
+      byteSize: buffer.length,
+      extension
     };
   });
 }
 
-function mediaResponse(media: Array<{ id: string; mimeType: string; originalName?: string; byteSize: number }>) {
+function mediaResponse(media: Array<{ id: string; mimeType: string; originalName?: string; byteSize: number; remoteUrl?: string | null }>) {
   return media.map((item) => ({
     id: item.id,
     mimeType: item.mimeType,
     fileName: item.originalName,
-    byteSize: item.byteSize
+    byteSize: item.byteSize,
+    remoteUrl: item.remoteUrl ?? null
   }));
 }
 
@@ -174,9 +183,47 @@ function mediaRowsResponse(media: MediaRow[]) {
       id: item.id,
       mimeType: item.mime_type,
       originalName: item.original_name ?? undefined,
-      byteSize: item.byte_size
+      byteSize: item.byte_size,
+      remoteUrl: item.remote_url
     }))
   );
+}
+
+async function uploadCommandMediaToR2(
+  media: Array<{ id: string; deviceId: string; path: string; mimeType: string; originalName?: string; byteSize: number; extension: string }>,
+  config: Config,
+  db: Database.Database,
+  onUploaded?: (mediaId: string, remoteUrl: string | null) => void,
+  onError?: (mediaId: string, error: unknown) => void
+): Promise<MediaRow[]> {
+  const rows: MediaRow[] = [];
+
+  for (const item of media) {
+    const existing = db.prepare("SELECT * FROM media WHERE id = ?").get(item.id) as MediaRow | undefined;
+    if (existing?.uploaded_at) {
+      rows.push(existing);
+      continue;
+    }
+
+    try {
+      const uploaded = await uploadMediaToR2(config, item);
+      if (uploaded) {
+        db.prepare(
+          "UPDATE media SET r2_key = ?, r2_bucket = ?, remote_url = ?, uploaded_at = ? WHERE id = ?"
+        ).run(uploaded.key, uploaded.bucket, uploaded.remoteUrl, uploaded.uploadedAt, item.id);
+        onUploaded?.(item.id, uploaded.remoteUrl);
+      }
+    } catch (error) {
+      onError?.(item.id, error);
+    }
+
+    const row = db.prepare("SELECT * FROM media WHERE id = ?").get(item.id) as MediaRow | undefined;
+    if (row) {
+      rows.push(row);
+    }
+  }
+
+  return rows;
 }
 
 function uniqueMediaRows(rows: MediaRow[]): MediaRow[] {
@@ -350,7 +397,17 @@ function createServer(config: Config, db: Database.Database) {
       .prepare("SELECT * FROM media WHERE id = ? AND device_id = ?")
       .get(params.id, device.id) as MediaRow | undefined;
 
-    if (!media || !existsSync(media.file_path)) {
+    if (!media) {
+      reply.status(404).send({ error: "Media not found" });
+      return;
+    }
+
+    if (!existsSync(media.file_path)) {
+      if (media.remote_url) {
+        reply.redirect(media.remote_url);
+        return;
+      }
+
       reply.status(404).send({ error: "Media not found" });
       return;
     }
@@ -434,6 +491,18 @@ function createServer(config: Config, db: Database.Database) {
       activity.push(commandActivity("compoota.server.media", "Stored attached photo", media[0].path));
     }
     const result = await runHermesCommand(hermesText, config, { imagePaths: media.map((item) => item.path) });
+    const uploadedMedia = await uploadCommandMediaToR2(media, config, db, (mediaId, remoteUrl) => {
+      activity.push(commandActivity("compoota.server.r2", "Uploaded photo to Cloudflare R2", remoteUrl ?? mediaId));
+    }, (mediaId, error) => {
+      activity.push(
+        commandActivity(
+          "compoota.server.r2.error",
+          "Cloudflare R2 upload failed",
+          error instanceof Error ? error.message : mediaId
+        )
+      );
+      activity[activity.length - 1].status = "error";
+    });
     const fullActivity = [...activity, ...result.activity];
     const replyMedia = mediaReferencesFromReply(result.reply, device.id, db);
     const cleanedReply = stripRenderedMediaReferences(result.reply, replyMedia);
@@ -450,7 +519,7 @@ function createServer(config: Config, db: Database.Database) {
 
     return {
       reply: cleanedReply || result.reply,
-      media: mediaResponse(media),
+      media: mediaRowsResponse(uploadedMedia),
       replyMedia: mediaRowsResponse(replyMedia),
       activity: fullActivity
     };
@@ -503,6 +572,20 @@ function createServer(config: Config, db: Database.Database) {
         imagePaths: media.map((item) => item.path),
         onActivity: emit
       });
+      const uploadedMedia = await uploadCommandMediaToR2(media, config, db, (mediaId, remoteUrl) => {
+        emit(commandActivity("compoota.server.r2", "Uploaded photo to Cloudflare R2", remoteUrl ?? mediaId));
+      }, (mediaId, error) => {
+        const failed = commandActivity(
+          "compoota.server.r2.error",
+          "Cloudflare R2 upload failed",
+          error instanceof Error ? error.message : mediaId
+        );
+        failed.status = "error";
+        emit(failed);
+      });
+      if (uploadedMedia.length > 0) {
+        sendSse(reply, "media", { media: mediaRowsResponse(uploadedMedia) });
+      }
 
       const replyMedia = mediaReferencesFromReply(result.reply, device.id, db);
       const cleanedReply = stripRenderedMediaReferences(result.reply, replyMedia);

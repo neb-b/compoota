@@ -62,6 +62,10 @@ export function openDatabase(databasePath: string): Database.Database {
       mime_type TEXT NOT NULL,
       original_name TEXT,
       byte_size INTEGER NOT NULL,
+      r2_key TEXT,
+      r2_bucket TEXT,
+      remote_url TEXT,
+      uploaded_at TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY (device_id) REFERENCES devices(id)
     );
@@ -71,6 +75,20 @@ export function openDatabase(databasePath: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_audit_log_device_id ON audit_log(device_id);
     CREATE INDEX IF NOT EXISTS idx_media_device_id ON media(device_id);
   `);
+
+  const mediaColumns = new Set(
+    db.prepare("PRAGMA table_info(media)").all().map((column) => (column as { name: string }).name)
+  );
+  for (const [column, definition] of [
+    ["r2_key", "TEXT"],
+    ["r2_bucket", "TEXT"],
+    ["remote_url", "TEXT"],
+    ["uploaded_at", "TEXT"]
+  ] as const) {
+    if (!mediaColumns.has(column)) {
+      db.prepare(`ALTER TABLE media ADD COLUMN ${column} ${definition}`).run();
+    }
+  }
 
   return db;
 }
