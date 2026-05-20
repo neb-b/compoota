@@ -173,13 +173,23 @@ function saveCommandMedia(
   });
 }
 
-function mediaResponse(media: Array<{ id: string; mimeType: string; originalName?: string; byteSize: number; remoteUrl?: string | null }>) {
+function mediaResponse(
+  media: Array<{
+    id: string;
+    mimeType: string;
+    originalName?: string;
+    byteSize: number;
+    remoteUrl?: string | null;
+    createdAt?: string;
+  }>
+) {
   return media.map((item) => ({
     id: item.id,
     mimeType: item.mimeType,
     fileName: item.originalName,
     byteSize: item.byteSize,
-    remoteUrl: item.remoteUrl ?? null
+    remoteUrl: item.remoteUrl ?? null,
+    createdAt: item.createdAt
   }));
 }
 
@@ -190,6 +200,7 @@ async function mediaRowsResponse(media: MediaRow[], config: Config) {
       mimeType: item.mime_type,
       originalName: item.original_name ?? undefined,
       byteSize: item.byte_size,
+      createdAt: item.created_at,
       remoteUrl: item.r2_bucket && item.r2_key
         ? await mediaReadUrl(config, item.r2_bucket, item.r2_key)
         : await mediaReadUrlFromStoredValue(config, item.remote_url)
@@ -398,6 +409,15 @@ function createServer(config: Config, db: Database.Database) {
     }
 
     return { ok: true };
+  });
+
+  app.get("/media", async (request) => {
+    const device = verifyDeviceToken(request, db, config);
+    const media = db
+      .prepare("SELECT * FROM media WHERE device_id = ? ORDER BY created_at DESC")
+      .all(device.id) as MediaRow[];
+
+    return { media: await mediaRowsResponse(media, config) };
   });
 
   app.get("/media/:id", async (request, reply) => {

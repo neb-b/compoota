@@ -1,5 +1,4 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import * as Clipboard from 'expo-clipboard'
 import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect'
 import * as ImagePicker from 'expo-image-picker'
 import { LinearGradient } from 'expo-linear-gradient'
@@ -58,9 +57,13 @@ type MessageMedia = {
   remoteUrl: string
   mimeType: string
   fileName?: string
+  byteSize?: number
+  createdAt?: string
   width?: number
   height?: number
 }
+
+type ActiveScreen = 'home' | 'media'
 
 type Message = {
   id: string
@@ -300,6 +303,55 @@ function mediaImageSource(media: MessageMedia): ImageSourcePropType {
   return { uri: media.remoteUrl }
 }
 
+function parseMediaItems(
+  value: unknown,
+): MessageMedia[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .filter((item) => {
+      if (!item || typeof item !== 'object') {
+        return false
+      }
+      const media = item as { id?: unknown; mimeType?: unknown; remoteUrl?: unknown }
+      return (
+        typeof media.id === 'string' &&
+        typeof media.mimeType === 'string' &&
+        typeof media.remoteUrl === 'string' &&
+        media.remoteUrl.length > 0
+      )
+    })
+    .map((item) => {
+      const media = item as {
+        id: string
+        mimeType: string
+        remoteUrl: string
+        fileName?: unknown
+        byteSize?: unknown
+        createdAt?: unknown
+      }
+
+      return {
+        id: media.id,
+        remoteUrl: media.remoteUrl,
+        mimeType: media.mimeType,
+        fileName: typeof media.fileName === 'string' ? media.fileName : undefined,
+        byteSize: typeof media.byteSize === 'number' ? media.byteSize : undefined,
+        createdAt: typeof media.createdAt === 'string' ? media.createdAt : undefined,
+      }
+    })
+}
+
+function mergeMediaItems(existing: MessageMedia[], next: MessageMedia[]): MessageMedia[] {
+  const byId = new Map<string, MessageMedia>()
+  for (const item of [...next, ...existing]) {
+    byId.set(item.id, item)
+  }
+  return [...byId.values()]
+}
+
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -360,18 +412,9 @@ function streamCommandRequest({
           onActivity(parsed.data as ActivityStep)
         } else if (parsed.event === 'media') {
           const data = parsed.data as {
-            media?: Array<{ id?: string; mimeType?: string; fileName?: string; remoteUrl?: string | null }>
+            media?: unknown
           }
-          const storedMedia = Array.isArray(data.media)
-            ? data.media
-                .filter((item) => item.id && item.mimeType && item.remoteUrl)
-                .map((item) => ({
-                  id: item.id as string,
-                  remoteUrl: item.remoteUrl as string,
-                  mimeType: item.mimeType as string,
-                  fileName: item.fileName,
-                }))
-            : []
+          const storedMedia = parseMediaItems(data.media)
           if (storedMedia.length > 0) {
             onMediaStored?.(storedMedia)
           }
@@ -379,18 +422,9 @@ function streamCommandRequest({
           const data = parsed.data as {
             reply?: string
             activity?: ActivityStep[]
-            media?: Array<{ id?: string; mimeType?: string; fileName?: string; remoteUrl?: string | null }>
+            media?: unknown
           }
-          const replyMedia = Array.isArray(data.media)
-            ? data.media
-                .filter((item) => item.id && item.mimeType && item.remoteUrl)
-                .map((item) => ({
-                  id: item.id as string,
-                  remoteUrl: item.remoteUrl as string,
-                  mimeType: item.mimeType as string,
-                  fileName: item.fileName,
-                }))
-            : undefined
+          const replyMedia = parseMediaItems(data.media)
           onReply(data.reply || '', Array.isArray(data.activity) ? data.activity : undefined, replyMedia)
         } else if (parsed.event === 'error') {
           fail(new Error('Command failed.'))
@@ -467,14 +501,16 @@ export default function HomeScreen() {
   const [pendingMedia, setPendingMedia] = useState<PendingMedia[]>([])
   const [mediaSheetVisible, setMediaSheetVisible] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
+  const [mediaLibrary, setMediaLibrary] = useState<MessageMedia[]>([])
+  const [mediaLibraryLoading, setMediaLibraryLoading] = useState(false)
+  const [mediaLibraryError, setMediaLibraryError] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [selectedActivityMessageId, setSelectedActivityMessageId] = useState<string | null>(null)
+  const [activeScreen, setActiveScreen] = useState<ActiveScreen>('home')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [composerFocused, setComposerFocused] = useState(false)
-  const [imageLoadErrors, setImageLoadErrors] = useState<Record<string, string>>({})
-  const [copiedImageUrlId, setCopiedImageUrlId] = useState<string | null>(null)
   const sidebarTranslateX = useSharedValue(0)
   const sidebarGestureStartTranslateX = useSharedValue(0)
   const sidebarGestureEnabled = useSharedValue(false)
@@ -521,6 +557,44 @@ export default function HomeScreen() {
     sidebarOpenValue.value = false
     sidebarTranslateX.value = withSpring(0, SIDEBAR_SPRING)
   }
+
+  const showScreen = (screen: ActiveScreen) => {
+    setActiveScreen(screen)
+    closeSidebar()
+    Keyboard.dismiss()
+  }
+
+  const loadMediaLibrary = useCallback(async () => {
+    if (!connection) {
+      return
+    }
+
+    setMediaLibraryLoading(true)
+    setMediaLibraryError('')
+    try {
+      const response = await fetchWithTimeout(
+        `${connection.serverUrl}/media`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${connection.deviceToken}`,
+          },
+        },
+        12000,
+      )
+
+      if (!response.ok) {
+        throw new Error(await readError(response))
+      }
+
+      const data = (await response.json()) as { media?: unknown }
+      setMediaLibrary(parseMediaItems(data.media))
+    } catch (err) {
+      setMediaLibraryError(err instanceof Error ? err.message : 'Media could not be loaded.')
+    } finally {
+      setMediaLibraryLoading(false)
+    }
+  }, [connection])
 
   const dismissKeyboard = useCallback(() => {
     Keyboard.dismiss()
@@ -695,6 +769,12 @@ export default function HomeScreen() {
     )
   }, [connection, loading, messages])
 
+  useEffect(() => {
+    if (activeScreen === 'media') {
+      loadMediaLibrary()
+    }
+  }, [activeScreen, loadMediaLibrary])
+
   async function connect() {
     setError('')
     setBusy(true)
@@ -752,6 +832,8 @@ export default function HomeScreen() {
       setPairingCode('')
       setDeviceName(cleanedName)
       setMessages([])
+      setMediaLibrary([])
+      setActiveScreen('home')
     } catch (err) {
       const message =
         err instanceof TypeError
@@ -811,6 +893,7 @@ export default function HomeScreen() {
         text,
         media: mediaForRequest,
         onMediaStored: (storedMedia) => {
+          setMediaLibrary((current) => mergeMediaItems(current, storedMedia))
           setMessages((current) =>
             current.map((message) =>
               message.id === userId
@@ -925,14 +1008,6 @@ export default function HomeScreen() {
     }
   }
 
-  async function copyImageUrl(media: MessageMedia) {
-    await Clipboard.setStringAsync(media.remoteUrl)
-    setCopiedImageUrlId(media.id)
-    setTimeout(() => {
-      setCopiedImageUrlId((current) => (current === media.id ? null : current))
-    }, 1600)
-  }
-
   async function resetConnection() {
     await AsyncStorage.removeItem(STORAGE_KEY)
     closeSidebar()
@@ -941,6 +1016,9 @@ export default function HomeScreen() {
     setPendingMedia([])
     setError('')
     setMessages([])
+    setMediaLibrary([])
+    setMediaLibraryError('')
+    setActiveScreen('home')
   }
 
   async function startFreshChat() {
@@ -953,6 +1031,7 @@ export default function HomeScreen() {
     setPendingMedia([])
     setSelectedActivityMessageId(null)
     setMessages([])
+    setActiveScreen('home')
     scrollRef.current?.scrollTo({ y: 0, animated: true })
   }
 
@@ -1053,6 +1132,44 @@ export default function HomeScreen() {
               <Text numberOfLines={1} style={styles.sidebarMeta}>
                 {sidebarServerHost ? `connected to ${sidebarServerHost}` : 'local companion'}
               </Text>
+              <View style={styles.sidebarNav}>
+                <Pressable
+                  accessibilityLabel="Open chat"
+                  onPress={() => showScreen('home')}
+                  style={({ pressed }) => [
+                    styles.sidebarNavItem,
+                    activeScreen === 'home' && styles.sidebarNavItemActive,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.sidebarNavText,
+                      activeScreen === 'home' && styles.sidebarNavTextActive,
+                    ]}
+                  >
+                    Home
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityLabel="Open media"
+                  onPress={() => showScreen('media')}
+                  style={({ pressed }) => [
+                    styles.sidebarNavItem,
+                    activeScreen === 'media' && styles.sidebarNavItemActive,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.sidebarNavText,
+                      activeScreen === 'media' && styles.sidebarNavTextActive,
+                    ]}
+                  >
+                    Media
+                  </Text>
+                </Pressable>
+              </View>
             </View>
 
             <View style={styles.sidebarFooter}>
@@ -1102,7 +1219,7 @@ export default function HomeScreen() {
                     </GlassSurface>
                   </Pressable>
 
-                  {hasMessages ? (
+                  {activeScreen === 'home' && hasMessages ? (
                     <Pressable
                       accessibilityLabel="Start new chat"
                       onPress={startFreshChat}
@@ -1128,191 +1245,191 @@ export default function HomeScreen() {
                   ) : null}
                 </View>
 
-                <ScrollView
-                  ref={scrollRef}
-                  contentContainerStyle={styles.messagesContent}
-                  keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-                  keyboardShouldPersistTaps="handled"
-                  onContentSizeChange={() => scheduleScrollToEnd(false)}
-                  onLayout={() => scheduleScrollToEnd(false)}
-                  style={styles.messages}
-                >
-                  {messages
-                    .filter((message) => message.text || message.media?.length || message.activity?.length)
-                    .map((message) => (
-                      <View
-                        key={message.id}
-                        style={[styles.messageRow, message.role === 'user' && styles.userMessageRow]}
-                      >
-                        <View style={[styles.message, message.role === 'user' && styles.userMessage]}>
-                          {message.role === 'assistant' && message.activity?.length ? (
-                            <Pressable
-                              onPress={() => setSelectedActivityMessageId(message.id)}
-                              style={({ pressed }) => [
-                                styles.activityLine,
-                                pressed && styles.activityLinePressed,
-                              ]}
-                            >
-                              <View style={styles.activityLineTextWrap}>
-                                <Text style={styles.activityLineTitle}>{activityStatusText(message)}</Text>
-                              </View>
-                            </Pressable>
-                          ) : null}
-                          {message.media?.length ? (
-                            <View style={styles.messageMediaGrid}>
-                              {message.media.map((item) => (
-                                <View key={item.id} style={styles.messageMediaItem}>
-                                  <Image
-                                    accessibilityLabel="Uploaded photo"
-                                    onError={(event) => {
-                                      const error =
-                                        event?.nativeEvent?.error || 'Image failed to load without a native error.'
-                                      setImageLoadErrors((current) => ({
-                                        ...current,
-                                        [item.id]: error,
-                                      }))
-                                    }}
-                                    onLoad={() => {
-                                      setImageLoadErrors((current) => {
-                                        if (!current[item.id]) {
-                                          return current
-                                        }
-                                        const next = { ...current }
-                                        delete next[item.id]
-                                        return next
-                                      })
-                                    }}
-                                    resizeMode="cover"
-                                    source={mediaImageSource(item)}
-                                    style={styles.messageImage}
-                                  />
-                                  <Pressable
-                                    accessibilityLabel="Copy image URL"
-                                    onPress={() => copyImageUrl(item)}
-                                    style={({ pressed }) => [
-                                      styles.messageImageDebugButton,
-                                      pressed && styles.pressed,
-                                    ]}
-                                  >
-                                    <Text selectable style={styles.messageImageDebugText}>
-                                      {copiedImageUrlId === item.id ? 'Copied ' : ''}
-                                      {item.remoteUrl}
-                                    </Text>
-                                  </Pressable>
-                                  {imageLoadErrors[item.id] ? (
-                                    <Text selectable style={styles.messageImageErrorText}>
-                                      native Image: {imageLoadErrors[item.id]}
-                                    </Text>
-                                  ) : null}
-                                </View>
-                              ))}
-                            </View>
-                          ) : null}
-                          {message.text ? (
-                            <Text
-                              style={[
-                                styles.messageText,
-                                message.role === 'assistant' &&
-                                  Boolean(message.activity?.length) &&
-                                  styles.assistantResponseText,
-                                message.role === 'user' && styles.userMessageText,
-                              ]}
-                            >
-                              {message.text}
-                            </Text>
-                          ) : null}
-                        </View>
-                      </View>
-                    ))}
-                </ScrollView>
-
-                {error ? <Text style={styles.chatError}>{error}</Text> : null}
-
-                <View style={styles.composerWrap}>
-                  <Pressable
-                    accessibilityLabel="Add photo"
-                    disabled={busy}
-                    onPress={() => setMediaSheetVisible(true)}
-                    style={({ pressed }) => [
-                      styles.attachButtonHitbox,
-                      (pressed || busy) && styles.glassPressed,
-                    ]}
-                  >
-                    <GlassSurface
-                      colorScheme={isDark ? 'dark' : 'light'}
-                      enabled={liquidGlassEnabled}
-                      isInteractive
-                      style={styles.attachButton}
-                      tintColor={colors.glassTint}
+                {activeScreen === 'home' ? (
+                  <>
+                    <ScrollView
+                      ref={scrollRef}
+                      contentContainerStyle={styles.messagesContent}
+                      keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+                      keyboardShouldPersistTaps="handled"
+                      onContentSizeChange={() => scheduleScrollToEnd(false)}
+                      onLayout={() => scheduleScrollToEnd(false)}
+                      style={styles.messages}
                     >
-                      <Text style={styles.attachIcon}>+</Text>
-                    </GlassSurface>
-                  </Pressable>
-
-                  <GlassSurface
-                    colorScheme={isDark ? 'dark' : 'light'}
-                    enabled={liquidGlassEnabled}
-                    isInteractive
-                    style={[styles.composer, composerFocused && styles.composerFocused]}
-                    tintColor={colors.glassTint}
-                  >
-                    {pendingMedia.length ? (
-                      <View style={styles.pendingMediaStrip}>
-                        {pendingMedia.map((item) => (
-                          <View key={item.id} style={styles.pendingMediaItem}>
-                            <View accessibilityLabel="Selected photo" style={styles.pendingMediaImage}>
-                              <View style={styles.pendingMediaGlyphFrame}>
-                                <View style={styles.pendingMediaGlyphSun} />
-                                <View style={styles.pendingMediaGlyphHill} />
-                              </View>
+                      {messages
+                        .filter((message) => message.text || message.media?.length || message.activity?.length)
+                        .map((message) => (
+                          <View
+                            key={message.id}
+                            style={[styles.messageRow, message.role === 'user' && styles.userMessageRow]}
+                          >
+                            <View style={[styles.message, message.role === 'user' && styles.userMessage]}>
+                              {message.role === 'assistant' && message.activity?.length ? (
+                                <Pressable
+                                  onPress={() => setSelectedActivityMessageId(message.id)}
+                                  style={({ pressed }) => [
+                                    styles.activityLine,
+                                    pressed && styles.activityLinePressed,
+                                  ]}
+                                >
+                                  <View style={styles.activityLineTextWrap}>
+                                    <Text style={styles.activityLineTitle}>{activityStatusText(message)}</Text>
+                                  </View>
+                                </Pressable>
+                              ) : null}
+                              {message.media?.length ? (
+                                <View style={styles.messageMediaGrid}>
+                                  {message.media.map((item) => (
+                                    <View key={item.id} style={styles.messageMediaItem}>
+                                      <Image
+                                        accessibilityLabel="Uploaded photo"
+                                        resizeMode="cover"
+                                        source={mediaImageSource(item)}
+                                        style={styles.messageImage}
+                                      />
+                                    </View>
+                                  ))}
+                                </View>
+                              ) : null}
+                              {message.text ? (
+                                <Text
+                                  style={[
+                                    styles.messageText,
+                                    message.role === 'assistant' &&
+                                      Boolean(message.activity?.length) &&
+                                      styles.assistantResponseText,
+                                    message.role === 'user' && styles.userMessageText,
+                                  ]}
+                                >
+                                  {message.text}
+                                </Text>
+                              ) : null}
                             </View>
-                            <Text selectable numberOfLines={2} style={styles.pendingMediaDebugText}>
-                              {item.fileName || item.mimeType}
-                            </Text>
-                            <Pressable
-                              accessibilityLabel="Remove selected photo"
-                              onPress={() => setPendingMedia([])}
-                              style={({ pressed }) => [styles.removeMediaButton, pressed && styles.pressed]}
-                            >
-                              <View style={styles.removeMediaGlyph}>
-                                <View style={[styles.removeMediaGlyphLine, styles.removeMediaGlyphLineA]} />
-                                <View style={[styles.removeMediaGlyphLine, styles.removeMediaGlyphLineB]} />
-                              </View>
-                            </Pressable>
                           </View>
                         ))}
-                      </View>
-                    ) : null}
-                    <View style={styles.composerInputRow}>
-                      <TextInput
-                        keyboardAppearance={isDark ? 'dark' : 'light'}
-                        multiline
-                        onBlur={() => setComposerFocused(false)}
-                        onChangeText={setCommand}
-                        onFocus={() => setComposerFocused(true)}
-                        onSubmitEditing={sendCommand}
-                        placeholder="Ask compoota"
-                        placeholderTextColor={colors.placeholder}
-                        returnKeyType="default"
-                        selectionColor={colors.selection}
-                        style={styles.commandInput}
-                        value={command}
-                      />
+                    </ScrollView>
+
+                    {error ? <Text style={styles.chatError}>{error}</Text> : null}
+
+                    <View style={styles.composerWrap}>
                       <Pressable
-                        accessibilityLabel="Send message"
+                        accessibilityLabel="Add photo"
                         disabled={busy}
-                        onPress={sendCommand}
-                        style={({ pressed }) => [styles.sendButton, (pressed || busy) && styles.pressed]}
+                        onPress={() => setMediaSheetVisible(true)}
+                        style={({ pressed }) => [
+                          styles.attachButtonHitbox,
+                          (pressed || busy) && styles.glassPressed,
+                        ]}
                       >
-                        {busy ? (
-                          <Text style={styles.busyText}>...</Text>
-                        ) : (
-                          <Text style={styles.sendIcon}>↑</Text>
-                        )}
+                        <GlassSurface
+                          colorScheme={isDark ? 'dark' : 'light'}
+                          enabled={liquidGlassEnabled}
+                          isInteractive
+                          style={styles.attachButton}
+                          tintColor={colors.glassTint}
+                        >
+                          <Text style={styles.attachIcon}>+</Text>
+                        </GlassSurface>
                       </Pressable>
+
+                      <GlassSurface
+                        colorScheme={isDark ? 'dark' : 'light'}
+                        enabled={liquidGlassEnabled}
+                        isInteractive
+                        style={[styles.composer, composerFocused && styles.composerFocused]}
+                        tintColor={colors.glassTint}
+                      >
+                        {pendingMedia.length ? (
+                          <View style={styles.pendingMediaStrip}>
+                            {pendingMedia.map((item) => (
+                              <View key={item.id} style={styles.pendingMediaItem}>
+                                <View accessibilityLabel="Selected photo" style={styles.pendingMediaImage}>
+                                  <View style={styles.pendingMediaGlyphFrame}>
+                                    <View style={styles.pendingMediaGlyphSun} />
+                                    <View style={styles.pendingMediaGlyphHill} />
+                                  </View>
+                                </View>
+                                <Pressable
+                                  accessibilityLabel="Remove selected photo"
+                                  onPress={() => setPendingMedia([])}
+                                  style={({ pressed }) => [styles.removeMediaButton, pressed && styles.pressed]}
+                                >
+                                  <View style={styles.removeMediaGlyph}>
+                                    <View style={[styles.removeMediaGlyphLine, styles.removeMediaGlyphLineA]} />
+                                    <View style={[styles.removeMediaGlyphLine, styles.removeMediaGlyphLineB]} />
+                                  </View>
+                                </Pressable>
+                              </View>
+                            ))}
+                          </View>
+                        ) : null}
+                        <View style={styles.composerInputRow}>
+                          <TextInput
+                            keyboardAppearance={isDark ? 'dark' : 'light'}
+                            multiline
+                            onBlur={() => setComposerFocused(false)}
+                            onChangeText={setCommand}
+                            onFocus={() => setComposerFocused(true)}
+                            onSubmitEditing={sendCommand}
+                            placeholder="Ask compoota"
+                            placeholderTextColor={colors.placeholder}
+                            returnKeyType="default"
+                            selectionColor={colors.selection}
+                            style={styles.commandInput}
+                            value={command}
+                          />
+                          <Pressable
+                            accessibilityLabel="Send message"
+                            disabled={busy}
+                            onPress={sendCommand}
+                            style={({ pressed }) => [styles.sendButton, (pressed || busy) && styles.pressed]}
+                          >
+                            {busy ? (
+                              <Text style={styles.busyText}>...</Text>
+                            ) : (
+                              <Text style={styles.sendIcon}>↑</Text>
+                            )}
+                          </Pressable>
+                        </View>
+                      </GlassSurface>
                     </View>
-                  </GlassSurface>
-                </View>
+                  </>
+                ) : (
+                  <ScrollView
+                    contentContainerStyle={styles.mediaContent}
+                    keyboardShouldPersistTaps="handled"
+                    style={styles.messages}
+                  >
+                    <View style={styles.mediaHeader}>
+                      <Text style={styles.mediaTitle}>Media</Text>
+                      <Text style={styles.mediaSubtitle}>
+                        {mediaLibrary.length} {mediaLibrary.length === 1 ? 'item' : 'items'}
+                      </Text>
+                    </View>
+                    {mediaLibraryLoading ? (
+                      <ActivityIndicator color={colors.text} style={styles.mediaLoader} />
+                    ) : mediaLibraryError ? (
+                      <Text style={styles.mediaEmptyText}>{mediaLibraryError}</Text>
+                    ) : mediaLibrary.length ? (
+                      <View style={styles.mediaLibraryGrid}>
+                        {mediaLibrary
+                          .filter((item) => item.mimeType.startsWith('image/'))
+                          .map((item) => (
+                            <View key={item.id} style={styles.mediaLibraryItem}>
+                              <Image
+                                accessibilityLabel={item.fileName || 'Stored image'}
+                                resizeMode="cover"
+                                source={mediaImageSource(item)}
+                                style={styles.mediaLibraryImage}
+                              />
+                            </View>
+                          ))}
+                      </View>
+                    ) : (
+                      <Text style={styles.mediaEmptyText}>No stored media yet.</Text>
+                    )}
+                  </ScrollView>
+                )}
               </View>
             </SafeAreaView>
             {sidebarOpen ? (
@@ -1700,6 +1817,29 @@ function createStyles(
       fontSize: 14,
       lineHeight: 20,
     },
+    sidebarNav: {
+      gap: 8,
+      paddingTop: 22,
+    },
+    sidebarNavItem: {
+      height: 46,
+      borderRadius: 23,
+      paddingHorizontal: 16,
+      alignItems: 'flex-start',
+      justifyContent: 'center',
+      backgroundColor: 'transparent',
+    },
+    sidebarNavItemActive: {
+      backgroundColor: isDark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.06)',
+    },
+    sidebarNavText: {
+      color: colors.secondaryText,
+      fontSize: 16,
+      fontWeight: '600',
+    },
+    sidebarNavTextActive: {
+      color: colors.text,
+    },
     sidebarFooter: {
       gap: 12,
     },
@@ -1793,31 +1933,6 @@ function createStyles(
       borderRadius: 16,
       backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     },
-    messageImageDebugButton: {
-      maxWidth: 210,
-      borderRadius: 8,
-      paddingHorizontal: 8,
-      paddingVertical: 6,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(255,232,120,0.55)',
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: isDark ? 'rgba(255,255,255,0.18)' : 'rgba(120,96,0,0.18)',
-    },
-    messageImageDebugText: {
-      color: colors.text,
-      fontSize: 11,
-      lineHeight: 15,
-    },
-    messageImageErrorText: {
-      maxWidth: 210,
-      borderRadius: 8,
-      paddingHorizontal: 8,
-      paddingVertical: 6,
-      color: '#ffffff',
-      backgroundColor: colors.error,
-      fontSize: 11,
-      lineHeight: 15,
-      fontWeight: '600',
-    },
     assistantResponseText: {
       marginTop: 2,
     },
@@ -1835,6 +1950,59 @@ function createStyles(
       textAlign: 'center',
       fontSize: 13,
       zIndex: 2,
+    },
+    mediaContent: {
+      paddingTop: 86,
+      paddingHorizontal: 18,
+      paddingBottom: Math.max(bottomInset, 18) + 28,
+    },
+    mediaHeader: {
+      maxWidth: 560,
+      width: '100%',
+      alignSelf: 'center',
+      paddingBottom: 22,
+    },
+    mediaTitle: {
+      color: colors.text,
+      fontSize: 34,
+      lineHeight: 40,
+      fontWeight: '700',
+      letterSpacing: 0,
+    },
+    mediaSubtitle: {
+      color: colors.secondaryText,
+      fontSize: 15,
+      lineHeight: 21,
+      marginTop: 6,
+    },
+    mediaLoader: {
+      marginTop: 28,
+    },
+    mediaEmptyText: {
+      color: colors.secondaryText,
+      fontSize: 15,
+      lineHeight: 22,
+      textAlign: 'center',
+      marginTop: 32,
+    },
+    mediaLibraryGrid: {
+      maxWidth: 560,
+      width: '100%',
+      alignSelf: 'center',
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+    },
+    mediaLibraryItem: {
+      width: '31.8%',
+      aspectRatio: 1,
+      borderRadius: 12,
+      overflow: 'hidden',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    },
+    mediaLibraryImage: {
+      width: '100%',
+      height: '100%',
     },
     modalRoot: {
       flex: 1,
@@ -2082,17 +2250,6 @@ function createStyles(
       borderRadius: 10,
       transform: [{ rotate: '-18deg' }],
       backgroundColor: colors.secondaryText,
-    },
-    pendingMediaDebugText: {
-      width: 72,
-      borderRadius: 6,
-      paddingHorizontal: 4,
-      paddingVertical: 3,
-      color: colors.text,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.10)' : 'rgba(255,232,120,0.45)',
-      fontSize: 9,
-      lineHeight: 11,
-      marginTop: 4,
     },
     removeMediaButton: {
       position: 'absolute',
