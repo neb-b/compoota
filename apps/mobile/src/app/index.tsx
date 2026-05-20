@@ -2,10 +2,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect'
 import * as ImagePicker from 'expo-image-picker'
 import { LinearGradient } from 'expo-linear-gradient'
+import { SymbolView, type SFSymbol } from 'expo-symbols'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react-native'
 import {
   ActivityIndicator,
+  Alert,
   Image,
   type ImageSourcePropType,
   Keyboard,
@@ -64,6 +66,13 @@ type MessageMedia = {
 }
 
 type ActiveScreen = 'home' | 'media'
+
+type AppleIconProps = {
+  color: string
+  name: SFSymbol
+  size?: number
+  weight?: 'regular' | 'medium' | 'semibold' | 'bold'
+}
 
 type Message = {
   id: string
@@ -152,6 +161,19 @@ function GlassSurface({
     >
       {children}
     </GlassView>
+  )
+}
+
+function AppleIcon({ color, name, size = 22, weight = 'medium' }: AppleIconProps) {
+  return (
+    <SymbolView
+      name={name}
+      resizeMode="scaleAspectFit"
+      size={size}
+      tintColor={color}
+      type="monochrome"
+      weight={weight}
+    />
   )
 }
 
@@ -517,6 +539,8 @@ export default function HomeScreen() {
   const sidebarGestureStartTranslateX = useSharedValue(0)
   const sidebarGestureEnabled = useSharedValue(false)
   const sidebarOpenValue = useSharedValue(false)
+  const expandedMediaTranslateX = useSharedValue(0)
+  const expandedMediaTranslateY = useSharedValue(0)
 
   const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId)
   const hasMessages = messages.some(
@@ -598,6 +622,12 @@ export default function HomeScreen() {
     }
   }, [connection])
 
+  const closeExpandedMedia = useCallback(() => {
+    expandedMediaTranslateX.value = 0
+    expandedMediaTranslateY.value = 0
+    setSelectedMedia(null)
+  }, [expandedMediaTranslateX, expandedMediaTranslateY])
+
   const deleteSelectedMedia = useCallback(async () => {
     if (!connection || !selectedMedia || deletingMediaId) {
       return
@@ -622,7 +652,7 @@ export default function HomeScreen() {
       }
 
       const deletedId = selectedMedia.id
-      setSelectedMedia(null)
+      closeExpandedMedia()
       setMediaLibrary((current) => current.filter((item) => item.id !== deletedId))
       setMessages((current) =>
         current.map((message) => ({
@@ -635,7 +665,22 @@ export default function HomeScreen() {
     } finally {
       setDeletingMediaId(null)
     }
-  }, [connection, deletingMediaId, selectedMedia])
+  }, [closeExpandedMedia, connection, deletingMediaId, selectedMedia])
+
+  const confirmDeleteSelectedMedia = useCallback(() => {
+    if (!selectedMedia || deletingMediaId) {
+      return
+    }
+
+    Alert.alert('Delete image?', 'This removes it from stored media.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: deleteSelectedMedia,
+      },
+    ])
+  }, [deleteSelectedMedia, deletingMediaId, selectedMedia])
 
   const dismissKeyboard = useCallback(() => {
     Keyboard.dismiss()
@@ -713,6 +758,43 @@ export default function HomeScreen() {
       transform: [{ translateX: interpolate(progress, [0, 1], [-28, 0]) }],
     }
   }, [sidebarOpenDistance])
+
+  const expandedMediaPanGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .onUpdate((event) => {
+          expandedMediaTranslateX.value = event.translationX
+          expandedMediaTranslateY.value = event.translationY
+        })
+        .onEnd((event) => {
+          const distance = Math.sqrt(event.translationX ** 2 + event.translationY ** 2)
+          const velocity = Math.sqrt(event.velocityX ** 2 + event.velocityY ** 2)
+          if (distance > 90 || velocity > 900) {
+            runOnJS(closeExpandedMedia)()
+            return
+          }
+
+          expandedMediaTranslateX.value = withSpring(0, SIDEBAR_SPRING)
+          expandedMediaTranslateY.value = withSpring(0, SIDEBAR_SPRING)
+        }),
+    [closeExpandedMedia, expandedMediaTranslateX, expandedMediaTranslateY],
+  )
+
+  const expandedMediaStyle = useAnimatedStyle(() => {
+    const distance = Math.min(
+      1,
+      Math.sqrt(expandedMediaTranslateX.value ** 2 + expandedMediaTranslateY.value ** 2) / 220,
+    )
+
+    return {
+      opacity: interpolate(distance, [0, 1], [1, 0.72]),
+      transform: [
+        { translateX: expandedMediaTranslateX.value },
+        { translateY: expandedMediaTranslateY.value },
+        { scale: interpolate(distance, [0, 1], [1, 0.96]) },
+      ],
+    }
+  })
 
   useEffect(() => {
     if (sidebarOpenValue.value) {
@@ -1246,20 +1328,17 @@ export default function HomeScreen() {
                     accessibilityLabel="Open sidebar"
                     onPress={openSidebar}
                     style={({ pressed }) => [styles.topIconButtonHitbox, pressed && styles.glassPressed]}
-                  >
-                    <GlassSurface
-                      colorScheme={isDark ? 'dark' : 'light'}
-                      enabled={liquidGlassEnabled}
-                      isInteractive
-                      style={styles.topIconButton}
-                      tintColor={colors.glassTint}
                     >
-                      <View style={styles.sidebarGlyph}>
-                        <View style={styles.sidebarGlyphLine} />
-                        <View style={[styles.sidebarGlyphLine, styles.sidebarGlyphLineShort]} />
-                      </View>
-                    </GlassSurface>
-                  </Pressable>
+                      <GlassSurface
+                        colorScheme={isDark ? 'dark' : 'light'}
+                        enabled={liquidGlassEnabled}
+                        isInteractive
+                        style={styles.topIconButton}
+                        tintColor={colors.glassTint}
+                      >
+                        <AppleIcon color={colors.text} name="line.3.horizontal" size={23} />
+                      </GlassSurface>
+                    </Pressable>
 
                   {activeScreen === 'home' && hasMessages ? (
                     <Pressable
@@ -1274,14 +1353,7 @@ export default function HomeScreen() {
                         style={styles.topIconButton}
                         tintColor={colors.glassTint}
                       >
-                        <View style={styles.newChatGlyph}>
-                          <View style={styles.newChatPad} />
-                          <View style={styles.newChatPadTop} />
-                          <View style={styles.newChatPencil}>
-                            <View style={styles.newChatPencilBody} />
-                            <View style={styles.newChatPencilTip} />
-                          </View>
-                        </View>
+                        <AppleIcon color={colors.text} name="square.and.pencil" size={22} />
                       </GlassSurface>
                     </Pressable>
                   ) : null}
@@ -1366,11 +1438,11 @@ export default function HomeScreen() {
                         <GlassSurface
                           colorScheme={isDark ? 'dark' : 'light'}
                           enabled={liquidGlassEnabled}
-                          isInteractive
-                          style={styles.attachButton}
-                          tintColor={colors.glassTint}
-                        >
-                          <Text style={styles.attachIcon}>+</Text>
+                        isInteractive
+                        style={styles.attachButton}
+                        tintColor={colors.glassTint}
+                      >
+                          <AppleIcon color={colors.text} name="plus" size={27} weight="regular" />
                         </GlassSurface>
                       </Pressable>
 
@@ -1429,7 +1501,7 @@ export default function HomeScreen() {
                             {busy ? (
                               <Text style={styles.busyText}>...</Text>
                             ) : (
-                              <Text style={styles.sendIcon}>↑</Text>
+                              <AppleIcon color={colors.actionText} name="arrow.up" size={20} weight="bold" />
                             )}
                           </Pressable>
                         </View>
@@ -1524,25 +1596,29 @@ export default function HomeScreen() {
       </Modal>
       <Modal
         animationType="fade"
-        onRequestClose={() => setSelectedMedia(null)}
+        onRequestClose={closeExpandedMedia}
         transparent
         visible={Boolean(selectedMedia)}
       >
         <View style={styles.expandedMediaRoot}>
-          <Pressable style={styles.expandedMediaBackdrop} onPress={() => setSelectedMedia(null)} />
+          <Pressable style={styles.expandedMediaBackdrop} onPress={closeExpandedMedia} />
           {selectedMedia ? (
             <>
-              <Image
-                accessibilityLabel={selectedMedia.fileName || 'Selected image'}
-                resizeMode="contain"
-                source={mediaImageSource(selectedMedia)}
-                style={styles.expandedMediaImage}
-              />
+              <GestureDetector gesture={expandedMediaPanGesture}>
+                <Animated.View style={[styles.expandedMediaFrame, expandedMediaStyle]}>
+                  <Image
+                    accessibilityLabel={selectedMedia.fileName || 'Selected image'}
+                    resizeMode="contain"
+                    source={mediaImageSource(selectedMedia)}
+                    style={styles.expandedMediaImage}
+                  />
+                </Animated.View>
+              </GestureDetector>
               <View style={styles.expandedMediaActions}>
                 <Pressable
                   accessibilityLabel="Delete image"
                   disabled={deletingMediaId === selectedMedia.id}
-                  onPress={deleteSelectedMedia}
+                  onPress={confirmDeleteSelectedMedia}
                   style={({ pressed }) => [
                     styles.expandedDeleteButtonHitbox,
                     (pressed || deletingMediaId === selectedMedia.id) && styles.glassPressed,
@@ -1819,74 +1895,6 @@ function createStyles(
       shadowRadius: 18,
       shadowOffset: { width: 0, height: 10 },
     },
-    newChatGlyph: {
-      width: 22,
-      height: 22,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    newChatPad: {
-      position: 'absolute',
-      left: 3,
-      top: 5,
-      width: 13,
-      height: 14,
-      borderRadius: 3,
-      borderWidth: 1.8,
-      borderColor: colors.text,
-    },
-    newChatPadTop: {
-      position: 'absolute',
-      left: 6,
-      top: 3,
-      width: 9,
-      height: 1.8,
-      borderRadius: 1,
-      backgroundColor: colors.text,
-    },
-    newChatPencil: {
-      position: 'absolute',
-      right: 2,
-      top: 3,
-      width: 14,
-      height: 14,
-      transform: [{ rotate: '-42deg' }],
-    },
-    newChatPencilBody: {
-      position: 'absolute',
-      left: 5,
-      top: 1,
-      width: 4,
-      height: 13,
-      borderRadius: 2,
-      backgroundColor: colors.text,
-    },
-    newChatPencilTip: {
-      position: 'absolute',
-      left: 5,
-      top: 13,
-      width: 0,
-      height: 0,
-      borderLeftWidth: 2,
-      borderRightWidth: 2,
-      borderTopWidth: 4,
-      borderLeftColor: 'transparent',
-      borderRightColor: 'transparent',
-      borderTopColor: colors.text,
-    },
-    sidebarGlyph: {
-      width: 20,
-      gap: 6,
-    },
-    sidebarGlyphLine: {
-      width: 20,
-      height: 2.25,
-      borderRadius: 2,
-      backgroundColor: colors.text,
-    },
-    sidebarGlyphLineShort: {
-      width: 15,
-    },
     sidebarUnderlay: {
       position: 'absolute',
       top: 0,
@@ -2114,6 +2122,11 @@ function createStyles(
     },
     expandedMediaBackdrop: {
       ...StyleSheet.absoluteFillObject,
+    },
+    expandedMediaFrame: {
+      width: '100%',
+      height: '100%',
+      borderRadius: 18,
     },
     expandedMediaImage: {
       width: '100%',
@@ -2481,15 +2494,6 @@ function createStyles(
           ? 'rgba(255,255,255,0.14)'
           : 'rgba(0,0,0,0.12)',
     },
-    attachIcon: {
-      color: colors.text,
-      width: 52,
-      height: 52,
-      fontSize: 38,
-      fontWeight: '300',
-      lineHeight: 48,
-      textAlign: 'center',
-    },
     sendButton: {
       width: 36,
       height: 36,
@@ -2497,15 +2501,6 @@ function createStyles(
       backgroundColor: colors.action,
       alignItems: 'center',
       justifyContent: 'center',
-    },
-    sendIcon: {
-      color: colors.actionText,
-      width: 42,
-      height: 42,
-      fontSize: 25,
-      fontWeight: '800',
-      lineHeight: 36,
-      textAlign: 'center',
     },
     busyText: {
       color: colors.actionText,

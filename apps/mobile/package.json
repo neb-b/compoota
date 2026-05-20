@@ -19,6 +19,7 @@
     "expo-linear-gradient": "~55.0.14",
     "expo-router": "~55.0.14",
     "expo-splash-screen": "~55.0.21",
+    "expo-symbols": "^55.0.8",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-native": "0.83.6",
