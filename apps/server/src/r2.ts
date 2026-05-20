@@ -75,6 +75,41 @@ export async function mediaReadUrl(config: Config, bucket: string, key: string):
   return publicUrl(config, key) ?? signedR2ReadUrl(config, bucket, key);
 }
 
+export function r2PartsFromApiUrl(value: string): { bucket: string; key: string } | null {
+  if (!isR2ApiEndpoint(value)) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const [bucket, ...keyParts] = parts;
+    if (!bucket || keyParts.length === 0) {
+      return null;
+    }
+
+    return {
+      bucket,
+      key: keyParts.map((part) => decodeURIComponent(part)).join("/")
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function mediaReadUrlFromStoredValue(config: Config, value: string | null): Promise<string | null> {
+  if (!value) {
+    return null;
+  }
+
+  const r2Parts = r2PartsFromApiUrl(value);
+  if (!r2Parts) {
+    return value;
+  }
+
+  return mediaReadUrl(config, r2Parts.bucket, r2Parts.key);
+}
+
 export async function uploadMediaToR2(config: Config, media: LocalMediaForUpload): Promise<R2UploadResult | null> {
   if (!isR2Configured(config)) {
     return null;

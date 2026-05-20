@@ -11,7 +11,7 @@ import { loadConfig, type Config } from "./config.js";
 import { createDeviceToken, createPairingCode, hashSecret } from "./crypto.js";
 import { openDatabase, type PairingCodeRow } from "./db.js";
 import { type CommandActivity, runHermesCommand } from "./hermes.js";
-import { isR2Configured, mediaReadUrl, uploadMediaToR2 } from "./r2.js";
+import { isR2Configured, mediaReadUrl, mediaReadUrlFromStoredValue, uploadMediaToR2 } from "./r2.js";
 import { setupPageHtml } from "./setup-page.js";
 
 const pairSchema = z.object({
@@ -190,7 +190,9 @@ async function mediaRowsResponse(media: MediaRow[], config: Config) {
       mimeType: item.mime_type,
       originalName: item.original_name ?? undefined,
       byteSize: item.byte_size,
-      remoteUrl: item.r2_bucket && item.r2_key ? await mediaReadUrl(config, item.r2_bucket, item.r2_key) : item.remote_url
+      remoteUrl: item.r2_bucket && item.r2_key
+        ? await mediaReadUrl(config, item.r2_bucket, item.r2_key)
+        : await mediaReadUrlFromStoredValue(config, item.remote_url)
     }))
   );
   return mediaResponse(items);
@@ -405,12 +407,16 @@ function createServer(config: Config, db: Database.Database) {
       .prepare("SELECT * FROM media WHERE id = ? AND device_id = ?")
       .get(params.id, device.id) as MediaRow | undefined;
 
-    if (!media?.remote_url) {
+    const remoteUrl = media?.r2_bucket && media.r2_key
+      ? await mediaReadUrl(config, media.r2_bucket, media.r2_key)
+      : await mediaReadUrlFromStoredValue(config, media?.remote_url ?? null);
+
+    if (!remoteUrl) {
       reply.status(404).send({ error: "Remote media not found" });
       return;
     }
 
-    reply.redirect(media.remote_url);
+    reply.redirect(remoteUrl);
   });
 
   app.post("/pair", {
