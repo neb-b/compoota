@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { Config } from "./config.js";
 
@@ -73,6 +73,32 @@ export async function signedR2ReadUrl(config: Config, bucket: string, key: strin
 
 export async function mediaReadUrl(config: Config, bucket: string, key: string): Promise<string> {
   return publicUrl(config, key) ?? signedR2ReadUrl(config, bucket, key);
+}
+
+export async function deleteMediaFromR2(config: Config, bucket: string, key: string): Promise<void> {
+  if (!isR2Configured(config)) {
+    return;
+  }
+
+  await r2Client(config).send(
+    new DeleteObjectCommand({
+      Bucket: bucket,
+      Key: key
+    })
+  );
+}
+
+export async function deleteMediaFromStoredValue(config: Config, value: string | null): Promise<void> {
+  if (!value) {
+    return;
+  }
+
+  const r2Parts = r2PartsFromApiUrl(value);
+  if (!r2Parts) {
+    return;
+  }
+
+  await deleteMediaFromR2(config, r2Parts.bucket, r2Parts.key);
 }
 
 export function r2PartsFromApiUrl(value: string): { bucket: string; key: string } | null {

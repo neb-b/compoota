@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type Database from "better-sqlite3";
@@ -11,7 +11,14 @@ import { loadConfig, type Config } from "./config.js";
 import { createDeviceToken, createPairingCode, hashSecret } from "./crypto.js";
 import { openDatabase, type PairingCodeRow } from "./db.js";
 import { type CommandActivity, runHermesCommand } from "./hermes.js";
-import { isR2Configured, mediaReadUrl, mediaReadUrlFromStoredValue, uploadMediaToR2 } from "./r2.js";
+import {
+  deleteMediaFromR2,
+  deleteMediaFromStoredValue,
+  isR2Configured,
+  mediaReadUrl,
+  mediaReadUrlFromStoredValue,
+  uploadMediaToR2
+} from "./r2.js";
 import { setupPageHtml } from "./setup-page.js";
 
 const pairSchema = z.object({
@@ -437,6 +444,35 @@ function createServer(config: Config, db: Database.Database) {
     }
 
     reply.redirect(remoteUrl);
+  });
+
+  app.delete("/media/:id", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const media = db
+      .prepare("SELECT * FROM media WHERE id = ? AND device_id = ?")
+      .get(params.id, device.id) as MediaRow | undefined;
+
+    if (!media) {
+      reply.status(404).send({ error: "Media not found" });
+      return;
+    }
+
+    if (media.r2_bucket && media.r2_key) {
+      await deleteMediaFromR2(config, media.r2_bucket, media.r2_key);
+    } else {
+      await deleteMediaFromStoredValue(config, media.remote_url);
+    }
+
+    db.prepare("DELETE FROM media WHERE id = ? AND device_id = ?").run(params.id, device.id);
+
+    try {
+      unlinkSync(media.file_path);
+    } catch {
+      // Local upload staging files are best-effort cleanup only.
+    }
+
+    return { ok: true };
   });
 
   app.post("/pair", {

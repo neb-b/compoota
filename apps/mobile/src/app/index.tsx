@@ -508,6 +508,8 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [selectedActivityMessageId, setSelectedActivityMessageId] = useState<string | null>(null)
+  const [selectedMedia, setSelectedMedia] = useState<MessageMedia | null>(null)
+  const [deletingMediaId, setDeletingMediaId] = useState<string | null>(null)
   const [activeScreen, setActiveScreen] = useState<ActiveScreen>('home')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [composerFocused, setComposerFocused] = useState(false)
@@ -595,6 +597,45 @@ export default function HomeScreen() {
       setMediaLibraryLoading(false)
     }
   }, [connection])
+
+  const deleteSelectedMedia = useCallback(async () => {
+    if (!connection || !selectedMedia || deletingMediaId) {
+      return
+    }
+
+    setDeletingMediaId(selectedMedia.id)
+    setMediaLibraryError('')
+    try {
+      const response = await fetchWithTimeout(
+        `${connection.serverUrl}/media/${selectedMedia.id}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${connection.deviceToken}`,
+          },
+        },
+        12000,
+      )
+
+      if (!response.ok) {
+        throw new Error(await readError(response))
+      }
+
+      const deletedId = selectedMedia.id
+      setSelectedMedia(null)
+      setMediaLibrary((current) => current.filter((item) => item.id !== deletedId))
+      setMessages((current) =>
+        current.map((message) => ({
+          ...message,
+          media: message.media?.filter((item) => item.id !== deletedId),
+        })),
+      )
+    } catch (err) {
+      setMediaLibraryError(err instanceof Error ? err.message : 'Media could not be deleted.')
+    } finally {
+      setDeletingMediaId(null)
+    }
+  }, [connection, deletingMediaId, selectedMedia])
 
   const dismissKeyboard = useCallback(() => {
     Keyboard.dismiss()
@@ -1018,6 +1059,7 @@ export default function HomeScreen() {
     setMessages([])
     setMediaLibrary([])
     setMediaLibraryError('')
+    setSelectedMedia(null)
     setActiveScreen('home')
   }
 
@@ -1415,14 +1457,22 @@ export default function HomeScreen() {
                         {mediaLibrary
                           .filter((item) => item.mimeType.startsWith('image/'))
                           .map((item) => (
-                            <View key={item.id} style={styles.mediaLibraryItem}>
+                            <Pressable
+                              accessibilityLabel="Open image"
+                              key={item.id}
+                              onPress={() => setSelectedMedia(item)}
+                              style={({ pressed }) => [
+                                styles.mediaLibraryItem,
+                                pressed && styles.pressed,
+                              ]}
+                            >
                               <Image
                                 accessibilityLabel={item.fileName || 'Stored image'}
                                 resizeMode="cover"
                                 source={mediaImageSource(item)}
                                 style={styles.mediaLibraryImage}
                               />
-                            </View>
+                            </Pressable>
                           ))}
                       </View>
                     ) : (
@@ -1470,6 +1520,55 @@ export default function HomeScreen() {
               <Text style={styles.mediaSheetCancelText}>Cancel</Text>
             </Pressable>
           </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setSelectedMedia(null)}
+        transparent
+        visible={Boolean(selectedMedia)}
+      >
+        <View style={styles.expandedMediaRoot}>
+          <Pressable style={styles.expandedMediaBackdrop} onPress={() => setSelectedMedia(null)} />
+          {selectedMedia ? (
+            <>
+              <Image
+                accessibilityLabel={selectedMedia.fileName || 'Selected image'}
+                resizeMode="contain"
+                source={mediaImageSource(selectedMedia)}
+                style={styles.expandedMediaImage}
+              />
+              <View style={styles.expandedMediaActions}>
+                <Pressable
+                  accessibilityLabel="Delete image"
+                  disabled={deletingMediaId === selectedMedia.id}
+                  onPress={deleteSelectedMedia}
+                  style={({ pressed }) => [
+                    styles.expandedDeleteButtonHitbox,
+                    (pressed || deletingMediaId === selectedMedia.id) && styles.glassPressed,
+                  ]}
+                >
+                  <GlassSurface
+                    colorScheme={isDark ? 'dark' : 'light'}
+                    enabled={liquidGlassEnabled}
+                    isInteractive
+                    style={styles.expandedDeleteButton}
+                    tintColor={colors.glassTint}
+                  >
+                    {deletingMediaId === selectedMedia.id ? (
+                      <ActivityIndicator color={colors.text} size="small" />
+                    ) : (
+                      <View style={styles.trashGlyph}>
+                        <View style={styles.trashGlyphLid} />
+                        <View style={styles.trashGlyphHandle} />
+                        <View style={styles.trashGlyphCan} />
+                      </View>
+                    )}
+                  </GlassSurface>
+                </Pressable>
+              </View>
+            </>
+          ) : null}
         </View>
       </Modal>
       <Modal
@@ -1820,6 +1919,7 @@ function createStyles(
     sidebarNav: {
       gap: 8,
       paddingTop: 22,
+      marginLeft: -16,
     },
     sidebarNavItem: {
       height: 46,
@@ -2003,6 +2103,80 @@ function createStyles(
     mediaLibraryImage: {
       width: '100%',
       height: '100%',
+    },
+    expandedMediaRoot: {
+      flex: 1,
+      backgroundColor: isDark ? 'rgba(0,0,0,0.92)' : 'rgba(248,248,247,0.92)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 14,
+      paddingVertical: Math.max(topInset, 18) + 18,
+    },
+    expandedMediaBackdrop: {
+      ...StyleSheet.absoluteFillObject,
+    },
+    expandedMediaImage: {
+      width: '100%',
+      height: '100%',
+      borderRadius: 18,
+    },
+    expandedMediaActions: {
+      position: 'absolute',
+      top: Math.max(topInset, 14) + 10,
+      right: 18,
+    },
+    expandedDeleteButtonHitbox: {
+      width: 48,
+      height: 48,
+      borderRadius: 24,
+    },
+    expandedDeleteButton: {
+      flex: 1,
+      borderRadius: 24,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: liquidGlassEnabled
+        ? 'transparent'
+        : isDark
+          ? 'rgba(24,24,24,0.82)'
+          : 'rgba(255,255,255,0.82)',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: liquidGlassEnabled
+        ? isDark
+          ? 'rgba(255,255,255,0.22)'
+          : 'rgba(255,255,255,0.72)'
+        : colors.border,
+    },
+    trashGlyph: {
+      width: 20,
+      height: 22,
+      alignItems: 'center',
+    },
+    trashGlyphLid: {
+      position: 'absolute',
+      top: 4,
+      width: 17,
+      height: 2,
+      borderRadius: 1,
+      backgroundColor: colors.text,
+    },
+    trashGlyphHandle: {
+      position: 'absolute',
+      top: 1,
+      width: 8,
+      height: 2,
+      borderRadius: 1,
+      backgroundColor: colors.text,
+    },
+    trashGlyphCan: {
+      position: 'absolute',
+      top: 8,
+      width: 14,
+      height: 12,
+      borderRadius: 3,
+      borderWidth: 2,
+      borderTopWidth: 0,
+      borderColor: colors.text,
     },
     modalRoot: {
       flex: 1,
