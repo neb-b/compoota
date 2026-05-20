@@ -8,6 +8,7 @@ export type Config = {
   r2Bucket: string | null;
   r2PublicBaseUrl: string | null;
   r2KeyPrefix: string;
+  r2SignedUrlTtlSeconds: number;
   houseSetupSecret: string;
   pairingCodeTtlMinutes: number;
   tokenHashSecret: string;
@@ -80,6 +81,7 @@ export function loadConfig(): Config {
     r2Bucket: readOptionalString("CLOUDFLARE_R2_BUCKET"),
     r2PublicBaseUrl: readOptionalString("CLOUDFLARE_R2_PUBLIC_BASE_URL"),
     r2KeyPrefix: process.env.CLOUDFLARE_R2_KEY_PREFIX?.trim().replace(/^\/+|\/+$/g, "") || "compoota",
+    r2SignedUrlTtlSeconds: readNumber("CLOUDFLARE_R2_SIGNED_URL_TTL_SECONDS", 3600),
     houseSetupSecret: readString("HOUSE_SETUP_SECRET", "change-this-long-random-string"),
     pairingCodeTtlMinutes: readNumber("PAIRING_CODE_TTL_MINUTES", 10),
     tokenHashSecret: readString("TOKEN_HASH_SECRET", "change-this-too"),

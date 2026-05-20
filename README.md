@@ -53,11 +53,13 @@ CLOUDFLARE_R2_SECRET_ACCESS_KEY=your-r2-secret-key
 CLOUDFLARE_R2_BUCKET=your-bucket-name
 CLOUDFLARE_R2_PUBLIC_BASE_URL=https://your-public-r2-domain.example.com
 CLOUDFLARE_R2_KEY_PREFIX=compoota
+CLOUDFLARE_R2_SIGNED_URL_TTL_SECONDS=3600
 ```
 
-`CLOUDFLARE_R2_PUBLIC_BASE_URL` is optional. If it is set, the app can render
-images directly from R2. If it is omitted, the app uses the authenticated
-house-server `/media/:id` route.
+`CLOUDFLARE_R2_PUBLIC_BASE_URL` is optional. If you leave it empty, or set it to
+the private `*.r2.cloudflarestorage.com` S3 API endpoint, the server returns
+signed R2 GET URLs for image rendering. If you set a true public/custom-domain
+base URL, the app renders that public URL directly.
 
 Health check:
 

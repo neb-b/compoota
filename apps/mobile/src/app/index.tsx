@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import * as Clipboard from 'expo-clipboard'
 import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect'
 import * as ImagePicker from 'expo-image-picker'
 import { LinearGradient } from 'expo-linear-gradient'
@@ -54,9 +55,7 @@ type ActivityStep = {
 
 type MessageMedia = {
   id: string
-  uri?: string
-  serverId?: string
-  remoteUrl?: string | null
+  remoteUrl: string
   mimeType: string
   fileName?: string
   width?: number
@@ -72,7 +71,8 @@ type Message = {
   isStreaming?: boolean
 }
 
-type PendingMedia = MessageMedia & {
+type PendingMedia = Omit<MessageMedia, 'remoteUrl'> & {
+  uri: string
   base64: string
 }
 
@@ -287,28 +287,17 @@ function parseMessages(value: string | null): Message[] | null {
     )
     .map((message) => ({
       ...message,
-      media: Array.isArray(message.media) ? message.media : undefined,
+      media: Array.isArray(message.media)
+        ? message.media.filter((item) => typeof item.remoteUrl === 'string' && item.remoteUrl)
+        : undefined,
       activity: Array.isArray(message.activity) ? message.activity : undefined,
     }))
 
   return messages.length > 0 ? messages : null
 }
 
-function mediaImageSource(media: MessageMedia, connection: Connection): ImageSourcePropType {
-  if (media.uri) {
-    return { uri: media.uri }
-  }
-
-  if (media.remoteUrl) {
-    return { uri: media.remoteUrl }
-  }
-
-  return {
-    uri: `${connection.serverUrl}/media/${media.serverId}`,
-    headers: {
-      Authorization: `Bearer ${connection.deviceToken}`,
-    },
-  }
+function mediaImageSource(media: MessageMedia): ImageSourcePropType {
+  return { uri: media.remoteUrl }
 }
 
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
@@ -375,11 +364,10 @@ function streamCommandRequest({
           }
           const storedMedia = Array.isArray(data.media)
             ? data.media
-                .filter((item) => item.id && item.mimeType)
+                .filter((item) => item.id && item.mimeType && item.remoteUrl)
                 .map((item) => ({
                   id: item.id as string,
-                  serverId: item.id,
-                  remoteUrl: item.remoteUrl,
+                  remoteUrl: item.remoteUrl as string,
                   mimeType: item.mimeType as string,
                   fileName: item.fileName,
                 }))
@@ -395,11 +383,10 @@ function streamCommandRequest({
           }
           const replyMedia = Array.isArray(data.media)
             ? data.media
-                .filter((item) => item.id && item.mimeType)
+                .filter((item) => item.id && item.mimeType && item.remoteUrl)
                 .map((item) => ({
                   id: item.id as string,
-                  serverId: item.id,
-                  remoteUrl: item.remoteUrl,
+                  remoteUrl: item.remoteUrl as string,
                   mimeType: item.mimeType as string,
                   fileName: item.fileName,
                 }))
@@ -485,6 +472,9 @@ export default function HomeScreen() {
   const [selectedActivityMessageId, setSelectedActivityMessageId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [composerFocused, setComposerFocused] = useState(false)
+  const [imageLoadErrors, setImageLoadErrors] = useState<Record<string, string>>({})
+  const [imageUrlDiagnostics, setImageUrlDiagnostics] = useState<Record<string, string>>({})
+  const [copiedImageUrlId, setCopiedImageUrlId] = useState<string | null>(null)
   const sidebarTranslateX = useSharedValue(0)
   const sidebarGestureStartTranslateX = useSharedValue(0)
   const sidebarGestureEnabled = useSharedValue(false)
@@ -673,6 +663,55 @@ export default function HomeScreen() {
   }, [messages])
 
   useEffect(() => {
+    const mediaToCheck = messages
+      .flatMap((message) => message.media ?? [])
+      .filter((item) => item.remoteUrl && !imageUrlDiagnostics[item.id])
+
+    if (mediaToCheck.length === 0) {
+      return
+    }
+
+    let cancelled = false
+
+    for (const item of mediaToCheck) {
+      setImageUrlDiagnostics((current) => ({
+        ...current,
+        [item.id]: 'fetch: checking URL...',
+      }))
+
+      fetch(item.remoteUrl, { method: 'HEAD' })
+        .catch(() => fetch(item.remoteUrl, { method: 'GET' }))
+        .then((response) => {
+          if (cancelled) {
+            return
+          }
+
+          const contentType = response.headers.get('content-type') || 'missing content-type'
+          const contentLength = response.headers.get('content-length') || 'missing content-length'
+          const cacheControl = response.headers.get('cache-control') || 'missing cache-control'
+          setImageUrlDiagnostics((current) => ({
+            ...current,
+            [item.id]: `fetch: ${response.status} ${response.statusText || ''} | ${contentType} | ${contentLength} bytes | ${cacheControl}`,
+          }))
+        })
+        .catch((err) => {
+          if (cancelled) {
+            return
+          }
+
+          setImageUrlDiagnostics((current) => ({
+            ...current,
+            [item.id]: `fetch error: ${err instanceof Error ? err.message : String(err)}`,
+          }))
+        })
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [imageUrlDiagnostics, messages])
+
+  useEffect(() => {
     if (!connection || loading) {
       return
     }
@@ -771,13 +810,12 @@ export default function HomeScreen() {
     setBusy(true)
     setCommand('')
     const mediaForRequest = pendingMedia
-    const mediaForMessage = mediaForRequest.map(({ base64: _base64, ...item }) => item)
     setPendingMedia([])
     const userId = messageId()
     const assistantId = messageId()
     setMessages((current) => [
       ...current,
-      { id: userId, role: 'user', text: text || 'Photo', media: mediaForMessage },
+      { id: userId, role: 'user', text: text || 'Photo' },
       {
         id: assistantId,
         role: 'assistant',
@@ -911,6 +949,14 @@ export default function HomeScreen() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Photo picker failed.')
     }
+  }
+
+  async function copyImageUrl(media: MessageMedia) {
+    await Clipboard.setStringAsync(media.remoteUrl)
+    setCopiedImageUrlId(media.id)
+    setTimeout(() => {
+      setCopiedImageUrlId((current) => (current === media.id ? null : current))
+    }, 1600)
   }
 
   async function resetConnection() {
@@ -1139,13 +1185,55 @@ export default function HomeScreen() {
                           {message.media?.length ? (
                             <View style={styles.messageMediaGrid}>
                               {message.media.map((item) => (
-                                <Image
-                                  key={item.id}
-                                  accessibilityLabel="Uploaded photo"
-                                  resizeMode="cover"
-                                  source={mediaImageSource(item, connection)}
-                                  style={styles.messageImage}
-                                />
+                                <View key={item.id} style={styles.messageMediaItem}>
+                                  <Image
+                                    accessibilityLabel="Uploaded photo"
+                                    onError={(event) => {
+                                      const error =
+                                        event?.nativeEvent?.error || 'Image failed to load without a native error.'
+                                      setImageLoadErrors((current) => ({
+                                        ...current,
+                                        [item.id]: error,
+                                      }))
+                                    }}
+                                    onLoad={() => {
+                                      setImageLoadErrors((current) => {
+                                        if (!current[item.id]) {
+                                          return current
+                                        }
+                                        const next = { ...current }
+                                        delete next[item.id]
+                                        return next
+                                      })
+                                    }}
+                                    resizeMode="cover"
+                                    source={mediaImageSource(item)}
+                                    style={styles.messageImage}
+                                  />
+                                  <Pressable
+                                    accessibilityLabel="Copy image URL"
+                                    onPress={() => copyImageUrl(item)}
+                                    style={({ pressed }) => [
+                                      styles.messageImageDebugButton,
+                                      pressed && styles.pressed,
+                                    ]}
+                                  >
+                                    <Text selectable style={styles.messageImageDebugText}>
+                                      {copiedImageUrlId === item.id ? 'Copied ' : ''}
+                                      {item.remoteUrl}
+                                    </Text>
+                                  </Pressable>
+                                  {imageLoadErrors[item.id] ? (
+                                    <Text selectable style={styles.messageImageErrorText}>
+                                      native Image: {imageLoadErrors[item.id]}
+                                    </Text>
+                                  ) : null}
+                                  {imageUrlDiagnostics[item.id] ? (
+                                    <Text selectable style={styles.messageImageDiagnosticText}>
+                                      {imageUrlDiagnostics[item.id]}
+                                    </Text>
+                                  ) : null}
+                                </View>
                               ))}
                             </View>
                           ) : null}
@@ -1201,12 +1289,15 @@ export default function HomeScreen() {
                       <View style={styles.pendingMediaStrip}>
                         {pendingMedia.map((item) => (
                           <View key={item.id} style={styles.pendingMediaItem}>
-                            <Image
-                              accessibilityLabel="Selected photo"
-                              resizeMode="cover"
-                              source={{ uri: item.uri }}
-                              style={styles.pendingMediaImage}
-                            />
+                            <View accessibilityLabel="Selected photo" style={styles.pendingMediaImage}>
+                              <View style={styles.pendingMediaGlyphFrame}>
+                                <View style={styles.pendingMediaGlyphSun} />
+                                <View style={styles.pendingMediaGlyphHill} />
+                              </View>
+                            </View>
+                            <Text selectable numberOfLines={2} style={styles.pendingMediaDebugText}>
+                              {item.fileName || item.mimeType}
+                            </Text>
                             <Pressable
                               accessibilityLabel="Remove selected photo"
                               onPress={() => setPendingMedia([])}
@@ -1722,11 +1813,51 @@ function createStyles(
       gap: 8,
       marginBottom: 8,
     },
+    messageMediaItem: {
+      gap: 6,
+    },
     messageImage: {
       width: 210,
       height: 210,
       borderRadius: 16,
       backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    },
+    messageImageDebugButton: {
+      maxWidth: 210,
+      borderRadius: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(255,232,120,0.55)',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: isDark ? 'rgba(255,255,255,0.18)' : 'rgba(120,96,0,0.18)',
+    },
+    messageImageDebugText: {
+      color: colors.text,
+      fontSize: 11,
+      lineHeight: 15,
+    },
+    messageImageErrorText: {
+      maxWidth: 210,
+      borderRadius: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+      color: '#ffffff',
+      backgroundColor: colors.error,
+      fontSize: 11,
+      lineHeight: 15,
+      fontWeight: '600',
+    },
+    messageImageDiagnosticText: {
+      maxWidth: 210,
+      borderRadius: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+      color: colors.text,
+      backgroundColor: isDark ? 'rgba(20,126,245,0.18)' : 'rgba(20,126,245,0.12)',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: isDark ? 'rgba(20,126,245,0.42)' : 'rgba(20,126,245,0.28)',
+      fontSize: 11,
+      lineHeight: 15,
     },
     assistantResponseText: {
       marginTop: 2,
@@ -1956,13 +2087,53 @@ function createStyles(
     },
     pendingMediaItem: {
       width: 72,
-      height: 72,
+      minHeight: 72,
     },
     pendingMediaImage: {
       width: 72,
       height: 72,
       borderRadius: 14,
+      alignItems: 'center',
+      justifyContent: 'center',
       backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    },
+    pendingMediaGlyphFrame: {
+      width: 34,
+      height: 28,
+      borderRadius: 5,
+      borderWidth: 1.8,
+      borderColor: colors.secondaryText,
+      overflow: 'hidden',
+    },
+    pendingMediaGlyphSun: {
+      position: 'absolute',
+      top: 5,
+      right: 6,
+      width: 5,
+      height: 5,
+      borderRadius: 2.5,
+      backgroundColor: colors.secondaryText,
+    },
+    pendingMediaGlyphHill: {
+      position: 'absolute',
+      left: 5,
+      bottom: -7,
+      width: 25,
+      height: 18,
+      borderRadius: 10,
+      transform: [{ rotate: '-18deg' }],
+      backgroundColor: colors.secondaryText,
+    },
+    pendingMediaDebugText: {
+      width: 72,
+      borderRadius: 6,
+      paddingHorizontal: 4,
+      paddingVertical: 3,
+      color: colors.text,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.10)' : 'rgba(255,232,120,0.45)',
+      fontSize: 9,
+      lineHeight: 11,
+      marginTop: 4,
     },
     removeMediaButton: {
       position: 'absolute',

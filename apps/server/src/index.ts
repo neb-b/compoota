@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { randomUUID } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type Database from "better-sqlite3";
@@ -11,7 +11,7 @@ import { loadConfig, type Config } from "./config.js";
 import { createDeviceToken, createPairingCode, hashSecret } from "./crypto.js";
 import { openDatabase, type PairingCodeRow } from "./db.js";
 import { type CommandActivity, runHermesCommand } from "./hermes.js";
-import { uploadMediaToR2 } from "./r2.js";
+import { isR2Configured, mediaReadUrl, uploadMediaToR2 } from "./r2.js";
 import { setupPageHtml } from "./setup-page.js";
 
 const pairSchema = z.object({
@@ -135,6 +135,12 @@ function saveCommandMedia(
   if (!body.media?.length) {
     return [];
   }
+  if (!isR2Configured(config)) {
+    throw httpError(
+      "Cloudflare R2 is required for image uploads. Set CLOUDFLARE_R2_ACCOUNT_ID, CLOUDFLARE_R2_ACCESS_KEY_ID, CLOUDFLARE_R2_SECRET_ACCESS_KEY, CLOUDFLARE_R2_BUCKET, and CLOUDFLARE_R2_PUBLIC_BASE_URL.",
+      500
+    );
+  }
 
   mkdirSync(config.mediaStorageDirectory, { recursive: true });
 
@@ -177,16 +183,17 @@ function mediaResponse(media: Array<{ id: string; mimeType: string; originalName
   }));
 }
 
-function mediaRowsResponse(media: MediaRow[]) {
-  return mediaResponse(
-    media.map((item) => ({
+async function mediaRowsResponse(media: MediaRow[], config: Config) {
+  const items = await Promise.all(
+    media.map(async (item) => ({
       id: item.id,
       mimeType: item.mime_type,
       originalName: item.original_name ?? undefined,
       byteSize: item.byte_size,
-      remoteUrl: item.remote_url
+      remoteUrl: item.r2_bucket && item.r2_key ? await mediaReadUrl(config, item.r2_bucket, item.r2_key) : item.remote_url
     }))
   );
+  return mediaResponse(items);
 }
 
 async function uploadCommandMediaToR2(
@@ -200,7 +207,7 @@ async function uploadCommandMediaToR2(
 
   for (const item of media) {
     const existing = db.prepare("SELECT * FROM media WHERE id = ?").get(item.id) as MediaRow | undefined;
-    if (existing?.uploaded_at) {
+    if (existing?.uploaded_at && existing.remote_url) {
       rows.push(existing);
       continue;
     }
@@ -215,6 +222,7 @@ async function uploadCommandMediaToR2(
       }
     } catch (error) {
       onError?.(item.id, error);
+      throw error;
     }
 
     const row = db.prepare("SELECT * FROM media WHERE id = ?").get(item.id) as MediaRow | undefined;
@@ -397,26 +405,12 @@ function createServer(config: Config, db: Database.Database) {
       .prepare("SELECT * FROM media WHERE id = ? AND device_id = ?")
       .get(params.id, device.id) as MediaRow | undefined;
 
-    if (!media) {
-      reply.status(404).send({ error: "Media not found" });
+    if (!media?.remote_url) {
+      reply.status(404).send({ error: "Remote media not found" });
       return;
     }
 
-    if (!existsSync(media.file_path)) {
-      if (media.remote_url) {
-        reply.redirect(media.remote_url);
-        return;
-      }
-
-      reply.status(404).send({ error: "Media not found" });
-      return;
-    }
-
-    reply
-      .type(media.mime_type)
-      .header("Cache-Control", "private, max-age=31536000, immutable")
-      .header("Content-Length", media.byte_size)
-      .send(createReadStream(media.file_path));
+    reply.redirect(media.remote_url);
   });
 
   app.post("/pair", {
@@ -506,6 +500,8 @@ function createServer(config: Config, db: Database.Database) {
     const fullActivity = [...activity, ...result.activity];
     const replyMedia = mediaReferencesFromReply(result.reply, device.id, db);
     const cleanedReply = stripRenderedMediaReferences(result.reply, replyMedia);
+    const replyMediaResponse = await mediaRowsResponse(replyMedia, config);
+    const uploadedMediaResponse = await mediaRowsResponse(uploadedMedia, config);
 
     db.prepare(
       "INSERT INTO audit_log (id, device_id, action, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)"
@@ -513,14 +509,14 @@ function createServer(config: Config, db: Database.Database) {
       randomUUID(),
       device.id,
       config.hermesCommandMode === "oneshot" ? "command.hermes" : "command.mock",
-      JSON.stringify({ text: body.text, media, replyMedia: mediaRowsResponse(replyMedia), activity: fullActivity }),
+      JSON.stringify({ text: body.text, media, replyMedia: replyMediaResponse, activity: fullActivity }),
       createdAt
     );
 
     return {
       reply: cleanedReply || result.reply,
-      media: mediaRowsResponse(uploadedMedia),
-      replyMedia: mediaRowsResponse(replyMedia),
+      media: uploadedMediaResponse,
+      replyMedia: replyMediaResponse,
       activity: fullActivity
     };
   });
@@ -562,10 +558,6 @@ function createServer(config: Config, db: Database.Database) {
     for (const item of media) {
       emit(commandActivity("compoota.server.media", "Stored attached photo", item.path));
     }
-    if (media.length > 0) {
-      sendSse(reply, "media", { media: mediaResponse(media) });
-    }
-
     try {
       const result = await runHermesCommand(hermesText, config, {
         runId,
@@ -584,11 +576,12 @@ function createServer(config: Config, db: Database.Database) {
         emit(failed);
       });
       if (uploadedMedia.length > 0) {
-        sendSse(reply, "media", { media: mediaRowsResponse(uploadedMedia) });
+        sendSse(reply, "media", { media: await mediaRowsResponse(uploadedMedia, config) });
       }
 
       const replyMedia = mediaReferencesFromReply(result.reply, device.id, db);
       const cleanedReply = stripRenderedMediaReferences(result.reply, replyMedia);
+      const replyMediaResponse = await mediaRowsResponse(replyMedia, config);
 
       db.prepare(
         "INSERT INTO audit_log (id, device_id, action, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)"
@@ -596,11 +589,11 @@ function createServer(config: Config, db: Database.Database) {
         randomUUID(),
         device.id,
         config.hermesCommandMode === "oneshot" ? "command.hermes" : "command.mock",
-        JSON.stringify({ text: body.text, media, replyMedia: mediaRowsResponse(replyMedia), activity, streamed: true, runId }),
+        JSON.stringify({ text: body.text, media, replyMedia: replyMediaResponse, activity, streamed: true, runId }),
         createdAt
       );
 
-      sendSse(reply, "reply", { reply: cleanedReply || result.reply, media: mediaRowsResponse(replyMedia), activity });
+      sendSse(reply, "reply", { reply: cleanedReply || result.reply, media: replyMediaResponse, activity });
       sendSse(reply, "done", { ok: true });
     } catch (error) {
       app.log.error(error);

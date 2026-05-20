@@ -26,8 +26,18 @@ function bearerToken(request: FastifyRequest): string | null {
   return token;
 }
 
+function queryToken(request: FastifyRequest): string | null {
+  const query = request.query;
+  if (!query || typeof query !== "object" || !("token" in query)) {
+    return null;
+  }
+
+  const token = (query as { token?: unknown }).token;
+  return typeof token === "string" && token ? token : null;
+}
+
 export function verifySetupSecret(request: FastifyRequest, config: Config): void {
-  const token = bearerToken(request);
+  const token = bearerToken(request) ?? queryToken(request);
   if (!token || !safeEqual(token, config.houseSetupSecret)) {
     throw new AuthError();
   }
