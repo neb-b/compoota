@@ -207,7 +207,7 @@ async function uploadCommandMediaToR2(
 
   for (const item of media) {
     const existing = db.prepare("SELECT * FROM media WHERE id = ?").get(item.id) as MediaRow | undefined;
-    if (existing?.uploaded_at && existing.remote_url) {
+    if (existing?.uploaded_at) {
       rows.push(existing);
       continue;
     }

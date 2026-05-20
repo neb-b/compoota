@@ -456,6 +456,7 @@ export default function HomeScreen() {
   )
   const colors = useMemo(() => createColors(isDark), [isDark])
   const scrollRef = useRef<ScrollView>(null)
+  const scrollToEndTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([])
   const sidebarOpenDistance = Math.min(screenWidth * 0.76, 340)
 
   const [connection, setConnection] = useState<Connection | null>(null)
@@ -473,7 +474,6 @@ export default function HomeScreen() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [composerFocused, setComposerFocused] = useState(false)
   const [imageLoadErrors, setImageLoadErrors] = useState<Record<string, string>>({})
-  const [imageUrlDiagnostics, setImageUrlDiagnostics] = useState<Record<string, string>>({})
   const [copiedImageUrlId, setCopiedImageUrlId] = useState<string | null>(null)
   const sidebarTranslateX = useSharedValue(0)
   const sidebarGestureStartTranslateX = useSharedValue(0)
@@ -495,6 +495,21 @@ export default function HomeScreen() {
       return connection.serverUrl
     }
   }, [connection])
+
+  const scrollChatToEnd = useCallback((animated = true) => {
+    scrollRef.current?.scrollToEnd({ animated })
+  }, [])
+
+  const scheduleScrollToEnd = useCallback(
+    (animated = true) => {
+      requestAnimationFrame(() => scrollChatToEnd(animated))
+      for (const delay of [60, 180, 420]) {
+        const timer = setTimeout(() => scrollChatToEnd(animated), delay)
+        scrollToEndTimersRef.current.push(timer)
+      }
+    },
+    [scrollChatToEnd],
+  )
   const openSidebar = () => {
     setSidebarOpen(true)
     sidebarOpenValue.value = true
@@ -594,9 +609,7 @@ export default function HomeScreen() {
     const updateKeyboardFrame = (event: KeyboardEvent) => {
       Keyboard.scheduleLayoutAnimation(event)
       setKeyboardHeight(Math.max(0, screenHeight - event.endCoordinates.screenY))
-      requestAnimationFrame(() => {
-        scrollRef.current?.scrollToEnd({ animated: true })
-      })
+      scheduleScrollToEnd(true)
     }
 
     const hideKeyboard = (event: KeyboardEvent) => {
@@ -617,7 +630,17 @@ export default function HomeScreen() {
       changeFrameSubscription.remove()
       hideSubscription.remove()
     }
-  }, [screenHeight])
+  }, [scheduleScrollToEnd, screenHeight])
+
+  useEffect(
+    () => () => {
+      for (const timer of scrollToEndTimersRef.current) {
+        clearTimeout(timer)
+      }
+      scrollToEndTimersRef.current = []
+    },
+    [],
+  )
 
   useEffect(() => {
     async function loadConnection() {
@@ -659,57 +682,8 @@ export default function HomeScreen() {
   }, [])
 
   useEffect(() => {
-    scrollRef.current?.scrollToEnd({ animated: true })
-  }, [messages])
-
-  useEffect(() => {
-    const mediaToCheck = messages
-      .flatMap((message) => message.media ?? [])
-      .filter((item) => item.remoteUrl && !imageUrlDiagnostics[item.id])
-
-    if (mediaToCheck.length === 0) {
-      return
-    }
-
-    let cancelled = false
-
-    for (const item of mediaToCheck) {
-      setImageUrlDiagnostics((current) => ({
-        ...current,
-        [item.id]: 'fetch: checking URL...',
-      }))
-
-      fetch(item.remoteUrl, { method: 'HEAD' })
-        .catch(() => fetch(item.remoteUrl, { method: 'GET' }))
-        .then((response) => {
-          if (cancelled) {
-            return
-          }
-
-          const contentType = response.headers.get('content-type') || 'missing content-type'
-          const contentLength = response.headers.get('content-length') || 'missing content-length'
-          const cacheControl = response.headers.get('cache-control') || 'missing cache-control'
-          setImageUrlDiagnostics((current) => ({
-            ...current,
-            [item.id]: `fetch: ${response.status} ${response.statusText || ''} | ${contentType} | ${contentLength} bytes | ${cacheControl}`,
-          }))
-        })
-        .catch((err) => {
-          if (cancelled) {
-            return
-          }
-
-          setImageUrlDiagnostics((current) => ({
-            ...current,
-            [item.id]: `fetch error: ${err instanceof Error ? err.message : String(err)}`,
-          }))
-        })
-    }
-
-    return () => {
-      cancelled = true
-    }
-  }, [imageUrlDiagnostics, messages])
+    scheduleScrollToEnd(!loading)
+  }, [loading, messages, scheduleScrollToEnd])
 
   useEffect(() => {
     if (!connection || loading) {
@@ -1159,6 +1133,8 @@ export default function HomeScreen() {
                   contentContainerStyle={styles.messagesContent}
                   keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
                   keyboardShouldPersistTaps="handled"
+                  onContentSizeChange={() => scheduleScrollToEnd(false)}
+                  onLayout={() => scheduleScrollToEnd(false)}
                   style={styles.messages}
                 >
                   {messages
@@ -1226,11 +1202,6 @@ export default function HomeScreen() {
                                   {imageLoadErrors[item.id] ? (
                                     <Text selectable style={styles.messageImageErrorText}>
                                       native Image: {imageLoadErrors[item.id]}
-                                    </Text>
-                                  ) : null}
-                                  {imageUrlDiagnostics[item.id] ? (
-                                    <Text selectable style={styles.messageImageDiagnosticText}>
-                                      {imageUrlDiagnostics[item.id]}
                                     </Text>
                                   ) : null}
                                 </View>
@@ -1846,18 +1817,6 @@ function createStyles(
       fontSize: 11,
       lineHeight: 15,
       fontWeight: '600',
-    },
-    messageImageDiagnosticText: {
-      maxWidth: 210,
-      borderRadius: 8,
-      paddingHorizontal: 8,
-      paddingVertical: 6,
-      color: colors.text,
-      backgroundColor: isDark ? 'rgba(20,126,245,0.18)' : 'rgba(20,126,245,0.12)',
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: isDark ? 'rgba(20,126,245,0.42)' : 'rgba(20,126,245,0.28)',
-      fontSize: 11,
-      lineHeight: 15,
     },
     assistantResponseText: {
       marginTop: 2,

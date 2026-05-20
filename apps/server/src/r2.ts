@@ -14,7 +14,7 @@ export type LocalMediaForUpload = {
 export type R2UploadResult = {
   bucket: string;
   key: string;
-  remoteUrl: string;
+  remoteUrl: string | null;
   uploadedAt: string;
 };
 
@@ -95,7 +95,7 @@ export async function uploadMediaToR2(config: Config, media: LocalMediaForUpload
   return {
     bucket,
     key,
-    remoteUrl: await mediaReadUrl(config, bucket, key),
+    remoteUrl: publicUrl(config, key),
     uploadedAt: new Date().toISOString()
   };
 }
