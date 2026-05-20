@@ -28,6 +28,18 @@ npm install
 npm run dev
 ```
 
+Restart the deployed house-server from the repo root:
+
+```sh
+./restart-server.sh
+```
+
+If you also run the Cloudflare tunnel:
+
+```sh
+./restart-server.sh --tunnel
+```
+
 Health check:
 
 ```sh

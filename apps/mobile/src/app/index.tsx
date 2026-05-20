@@ -1025,7 +1025,7 @@ export default function HomeScreen() {
                               ]}
                             >
                               <View style={styles.activityLineTextWrap}>
-                                <Text numberOfLines={1} style={styles.activityLineTitle}>
+                                <Text style={styles.activityLineTitle}>
                                   {activityStatusText(message)}
                                 </Text>
                               </View>
@@ -1530,7 +1530,7 @@ function createStyles(
       flexDirection: 'row',
       alignItems: 'center',
       alignSelf: 'flex-start',
-      maxWidth: '94%',
+      maxWidth: '100%',
       paddingVertical: 2,
       marginBottom: 7,
     },
@@ -1539,12 +1539,14 @@ function createStyles(
     },
     activityLineTextWrap: {
       flexShrink: 1,
+      maxWidth: '100%',
     },
     activityLineTitle: {
       color: colors.subtleText,
       fontSize: 12,
       lineHeight: 16,
       fontWeight: '500',
+      flexShrink: 1,
     },
     messageText: {
       color: colors.text,
