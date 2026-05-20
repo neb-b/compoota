@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect'
 import * as ImagePicker from 'expo-image-picker'
+import { LinearGradient } from 'expo-linear-gradient'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react-native'
 import {
@@ -329,7 +330,7 @@ function streamCommandRequest({
   media?: PendingMedia[]
   onMediaStored?: (media: MessageMedia[]) => void
   onActivity: (step: ActivityStep) => void
-  onReply: (reply: string, activity?: ActivityStep[]) => void
+  onReply: (reply: string, activity?: ActivityStep[], media?: MessageMedia[]) => void
 }): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
@@ -381,8 +382,22 @@ function streamCommandRequest({
             onMediaStored?.(storedMedia)
           }
         } else if (parsed.event === 'reply') {
-          const data = parsed.data as { reply?: string; activity?: ActivityStep[] }
-          onReply(data.reply || '', Array.isArray(data.activity) ? data.activity : undefined)
+          const data = parsed.data as {
+            reply?: string
+            activity?: ActivityStep[]
+            media?: Array<{ id?: string; mimeType?: string; fileName?: string }>
+          }
+          const replyMedia = Array.isArray(data.media)
+            ? data.media
+                .filter((item) => item.id && item.mimeType)
+                .map((item) => ({
+                  id: item.id as string,
+                  serverId: item.id,
+                  mimeType: item.mimeType as string,
+                  fileName: item.fileName,
+                }))
+            : undefined
+          onReply(data.reply || '', Array.isArray(data.activity) ? data.activity : undefined, replyMedia)
         } else if (parsed.event === 'error') {
           fail(new Error('Command failed.'))
         }
@@ -794,10 +809,11 @@ export default function HomeScreen() {
             activity: mergeActivity(message.activity, step),
           }))
         },
-        onReply: (reply, activity) => {
+        onReply: (reply, activity, media) => {
           updateAssistant((message) => ({
             ...message,
             text: reply,
+            media: media?.length ? media : message.media,
             activity: activity ?? message.activity,
             isStreaming: false,
           }))
@@ -1027,6 +1043,12 @@ export default function HomeScreen() {
           <Animated.View style={[styles.mainPanel, sidebarMainStyle]}>
             <SafeAreaView style={styles.chatSafeArea}>
               <View style={styles.chatShell}>
+                <LinearGradient
+                  colors={[colors.headerFade, colors.headerFade, colors.transparent]}
+                  locations={[0, 0.55, 1]}
+                  pointerEvents="none"
+                  style={styles.topFade}
+                />
                 <View style={styles.topButtons}>
                   <Pressable
                     accessibilityLabel="Open sidebar"
@@ -1326,6 +1348,8 @@ function createColors(isDark: boolean) {
     action: isDark ? '#ffffff' : '#0b0b0b',
     actionText: isDark ? '#111111' : '#ffffff',
     glassTint: isDark ? 'rgba(24,24,24,0.62)' : 'rgba(255,255,255,0.58)',
+    headerFade: isDark ? '#111111' : '#f8f8f7',
+    transparent: isDark ? 'rgba(17,17,17,0)' : 'rgba(248,248,247,0)',
     userBubble: isDark ? '#eeeeea' : '#161616',
     userText: isDark ? '#111111' : '#ffffff',
     error: '#d93d3d',
@@ -1456,6 +1480,14 @@ function createStyles(
     chatShell: {
       flex: 1,
       backgroundColor: colors.background,
+    },
+    topFade: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      height: 8,
+      zIndex: 2,
     },
     topButtons: {
       position: 'absolute',
@@ -1616,7 +1648,7 @@ function createStyles(
       flex: 1,
     },
     messagesContent: {
-      paddingTop: Math.max(topInset + 78, 108),
+      paddingTop: 64,
       paddingHorizontal: 20,
       paddingBottom: composerBottom + 118,
       gap: 24,

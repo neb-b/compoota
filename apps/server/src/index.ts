@@ -168,6 +168,81 @@ function mediaResponse(media: Array<{ id: string; mimeType: string; originalName
   }));
 }
 
+function mediaRowsResponse(media: MediaRow[]) {
+  return mediaResponse(
+    media.map((item) => ({
+      id: item.id,
+      mimeType: item.mime_type,
+      originalName: item.original_name ?? undefined,
+      byteSize: item.byte_size
+    }))
+  );
+}
+
+function uniqueMediaRows(rows: MediaRow[]): MediaRow[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (seen.has(row.id)) {
+      return false;
+    }
+    seen.add(row.id);
+    return true;
+  });
+}
+
+function imageFileName(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
+}
+
+function mediaReferencesFromReply(reply: string, deviceId: string, db: Database.Database): MediaRow[] {
+  const rows: MediaRow[] = [];
+  const uuidPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
+  const imagePathPattern = /(?:\/|file:\/\/)[^\s`'"<>)]+?\.(?:jpe?g|png|webp|heic|heif)\b/gi;
+
+  for (const match of reply.matchAll(uuidPattern)) {
+    const row = db
+      .prepare("SELECT * FROM media WHERE id = ? AND device_id = ?")
+      .get(match[0], deviceId) as MediaRow | undefined;
+    if (row) {
+      rows.push(row);
+    }
+  }
+
+  for (const match of reply.matchAll(imagePathPattern)) {
+    const path = match[0].replace(/^file:\/\//, "");
+    const fileName = imageFileName(path);
+    const row = db
+      .prepare("SELECT * FROM media WHERE device_id = ? AND (file_path = ? OR file_path LIKE ?)")
+      .get(deviceId, path, `%/${fileName}`) as MediaRow | undefined;
+    if (row) {
+      rows.push(row);
+    }
+  }
+
+  return uniqueMediaRows(rows);
+}
+
+function stripRenderedMediaReferences(reply: string, media: MediaRow[]): string {
+  if (media.length === 0) {
+    return reply;
+  }
+
+  let cleaned = reply;
+  for (const item of media) {
+    const fileName = imageFileName(item.file_path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    cleaned = cleaned.replace(new RegExp(`(?:file://)?[^\\s\`'"<>)]+/${fileName}`, "g"), "the image below");
+    cleaned = cleaned.replace(new RegExp(`\\bmedia_id=${item.id}\\b`, "g"), "");
+    cleaned = cleaned.replace(new RegExp(`\\b${item.id}\\b`, "g"), "");
+  }
+
+  return cleaned
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+([.,:;!?])/g, "$1").replace(/\s{2,}/g, " ").trim())
+    .filter((line) => line && !/^the image below[.:]?$/i.test(line))
+    .join("\n")
+    .trim();
+}
+
 function buildHermesText(text: string, media: Array<{ id: string; path: string; mimeType: string }>): string {
   const trimmed = text.trim();
   if (media.length === 0) {
@@ -360,6 +435,8 @@ function createServer(config: Config, db: Database.Database) {
     }
     const result = await runHermesCommand(hermesText, config, { imagePaths: media.map((item) => item.path) });
     const fullActivity = [...activity, ...result.activity];
+    const replyMedia = mediaReferencesFromReply(result.reply, device.id, db);
+    const cleanedReply = stripRenderedMediaReferences(result.reply, replyMedia);
 
     db.prepare(
       "INSERT INTO audit_log (id, device_id, action, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)"
@@ -367,13 +444,14 @@ function createServer(config: Config, db: Database.Database) {
       randomUUID(),
       device.id,
       config.hermesCommandMode === "oneshot" ? "command.hermes" : "command.mock",
-      JSON.stringify({ text: body.text, media, activity: fullActivity }),
+      JSON.stringify({ text: body.text, media, replyMedia: mediaRowsResponse(replyMedia), activity: fullActivity }),
       createdAt
     );
 
     return {
-      reply: result.reply,
+      reply: cleanedReply || result.reply,
       media: mediaResponse(media),
+      replyMedia: mediaRowsResponse(replyMedia),
       activity: fullActivity
     };
   });
@@ -426,17 +504,20 @@ function createServer(config: Config, db: Database.Database) {
         onActivity: emit
       });
 
+      const replyMedia = mediaReferencesFromReply(result.reply, device.id, db);
+      const cleanedReply = stripRenderedMediaReferences(result.reply, replyMedia);
+
       db.prepare(
         "INSERT INTO audit_log (id, device_id, action, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)"
       ).run(
         randomUUID(),
         device.id,
         config.hermesCommandMode === "oneshot" ? "command.hermes" : "command.mock",
-        JSON.stringify({ text: body.text, media, activity, streamed: true, runId }),
+        JSON.stringify({ text: body.text, media, replyMedia: mediaRowsResponse(replyMedia), activity, streamed: true, runId }),
         createdAt
       );
 
-      sendSse(reply, "reply", { reply: result.reply, activity });
+      sendSse(reply, "reply", { reply: cleanedReply || result.reply, media: mediaRowsResponse(replyMedia), activity });
       sendSse(reply, "done", { ok: true });
     } catch (error) {
       app.log.error(error);
