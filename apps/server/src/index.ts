@@ -14,6 +14,7 @@ import {
   getOrCreateFeedPreferences,
   latestFeedRun,
   listFeedItems,
+  refreshFeedForAllDevices,
   refreshFeedForDevice,
   setFeedFeedback,
   startFeedScheduler,
@@ -403,6 +404,50 @@ function createServer(config: Config, db: Database.Database) {
     ).run(randomUUID(), hashSecret(pairingCode, config.tokenHashSecret), expiresAt, createdAt);
 
     return { pairingCode, expiresAt };
+  });
+
+  app.get("/setup/feed/status", async (request) => {
+    verifySetupSecret(request, config);
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'feed_%' ORDER BY name")
+      .all() as Array<{ name: string }>;
+    const devices = db
+      .prepare("SELECT id, name, created_at FROM devices WHERE revoked_at IS NULL ORDER BY created_at DESC")
+      .all() as Array<{ id: string; name: string; created_at: string }>;
+    const runs = db
+      .prepare("SELECT * FROM feed_refresh_runs ORDER BY started_at DESC LIMIT 10")
+      .all() as Array<Record<string, unknown>>;
+    const items = db
+      .prepare("SELECT title, starts_at, area, score, created_at FROM feed_items ORDER BY starts_at ASC LIMIT 10")
+      .all() as Array<Record<string, unknown>>;
+
+    return {
+      config: {
+        mode: config.hermesCommandMode,
+        enabled: config.feedRefreshEnabled,
+        refreshHour: config.feedRefreshHour,
+        location: config.feedDefaultLocation,
+        radiusMiles: config.feedDefaultRadiusMiles,
+        maxItems: config.feedMaxItems,
+        inclusionThreshold: config.feedInclusionThreshold
+      },
+      tables: tables.map((table) => table.name),
+      devices,
+      runs,
+      items
+    };
+  });
+
+  app.post("/setup/feed/refresh", async (request) => {
+    verifySetupSecret(request, config);
+    const results = await refreshFeedForAllDevices(db, config);
+    return {
+      results,
+      status: {
+        runs: db.prepare("SELECT * FROM feed_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
+        items: db.prepare("SELECT title, starts_at, area, score, created_at FROM feed_items ORDER BY starts_at ASC LIMIT 10").all()
+      }
+    };
   });
 
   app.get("/devices", async (request) => {

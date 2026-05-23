@@ -69,6 +69,12 @@ export type FeedRefreshResponse = {
   items: FeedItemResponse[];
 };
 
+export type FeedRefreshAllResult = {
+  deviceId: string;
+  deviceName: string;
+  result: FeedRefreshResponse;
+};
+
 const hermesFeedItemSchema = z.object({
   title: z.string().trim().min(1).max(180),
   summary: z.string().trim().min(1).max(500),
@@ -478,16 +484,25 @@ export function latestFeedRun(db: Database.Database, deviceId: string): FeedRefr
 let schedulerRunning = false;
 let schedulerTimer: ReturnType<typeof setTimeout> | null = null;
 
-async function refreshAllDevices(db: Database.Database, config: Config): Promise<void> {
+export async function refreshFeedForAllDevices(
+  db: Database.Database,
+  config: Config
+): Promise<FeedRefreshAllResult[]> {
   if (schedulerRunning) {
-    return;
+    return [];
   }
   schedulerRunning = true;
   try {
     const devices = db.prepare("SELECT * FROM devices WHERE revoked_at IS NULL").all() as DeviceRow[];
+    const results: FeedRefreshAllResult[] = [];
     for (const device of devices) {
-      await refreshFeedForDevice(db, config, device.id);
+      results.push({
+        deviceId: device.id,
+        deviceName: device.name,
+        result: await refreshFeedForDevice(db, config, device.id)
+      });
     }
+    return results;
   } finally {
     schedulerRunning = false;
   }
@@ -508,11 +523,11 @@ export function startFeedScheduler(db: Database.Database, config: Config): void 
     return;
   }
 
-  refreshAllDevices(db, config).catch(() => undefined);
+  refreshFeedForAllDevices(db, config).catch(() => undefined);
 
   const scheduleNext = () => {
     schedulerTimer = setTimeout(() => {
-      refreshAllDevices(db, config)
+      refreshFeedForAllDevices(db, config)
         .catch(() => undefined)
         .finally(scheduleNext);
     }, msUntilNextRefresh(config.feedRefreshHour));
