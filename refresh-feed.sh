@@ -42,12 +42,16 @@ pretty_json() {
   if command -v jq >/dev/null 2>&1; then
     jq .
   else
-    node -e "let body=''; process.stdin.on('data', c => body += c); process.stdin.on('end', () => console.log(JSON.stringify(JSON.parse(body), null, 2)));"
+    cat
   fi
 }
 
 running_count() {
-  node -e "let body=''; process.stdin.on('data', c => body += c); process.stdin.on('end', () => { const data = JSON.parse(body); console.log((data.runs || []).filter((run) => run.status === 'running').length); });"
+  if command -v jq >/dev/null 2>&1; then
+    jq '[.runs[]? | select(.status == "running")] | length'
+  else
+    grep -o '"status":"running"\|"status": "running"' | wc -l | tr -d ' '
+  fi
 }
 
 echo "== Feed status before refresh =="

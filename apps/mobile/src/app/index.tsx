@@ -15,7 +15,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -1809,13 +1808,6 @@ export default function HomeScreen() {
                   <ScrollView
                     contentContainerStyle={styles.feedContent}
                     keyboardShouldPersistTaps="handled"
-                    refreshControl={
-                      <RefreshControl
-                        refreshing={feedRefreshing}
-                        onRefresh={refreshFeed}
-                        tintColor={colors.text}
-                      />
-                    }
                     style={styles.messages}
                   >
                     {feedLoading ? (
