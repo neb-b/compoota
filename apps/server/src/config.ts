@@ -19,6 +19,12 @@ export type Config = {
   hermesWorkingDirectory: string;
   hermesPythonPath: string;
   hermesTimeoutSeconds: number;
+  feedRefreshEnabled: boolean;
+  feedRefreshHour: number;
+  feedMaxItems: number;
+  feedDefaultLocation: string;
+  feedDefaultRadiusMiles: number;
+  feedInclusionThreshold: number;
 };
 
 function readNumber(name: string, fallback: number): number {
@@ -65,6 +71,31 @@ function readStringList(name: string): string[] {
     .filter(Boolean);
 }
 
+function readBoolean(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  throw new Error(`${name} must be true or false`);
+}
+
+function readHour(name: string, fallback: number): number {
+  const value = readNumber(name, fallback);
+  if (!Number.isInteger(value) || value < 0 || value > 23) {
+    throw new Error(`${name} must be an integer from 0 to 23`);
+  }
+  return value;
+}
+
 export function loadConfig(): Config {
   const hermesCommandMode = readString("HERMES_COMMAND_MODE", "mock");
   if (hermesCommandMode !== "mock" && hermesCommandMode !== "oneshot") {
@@ -94,6 +125,12 @@ export function loadConfig(): Config {
       "HERMES_PYTHON_PATH",
       "/home/pi/.hermes/hermes-agent/venv/bin/python"
     ),
-    hermesTimeoutSeconds: readNumber("HERMES_TIMEOUT_SECONDS", 120)
+    hermesTimeoutSeconds: readNumber("HERMES_TIMEOUT_SECONDS", 120),
+    feedRefreshEnabled: readBoolean("FEED_REFRESH_ENABLED", true),
+    feedRefreshHour: readHour("FEED_REFRESH_HOUR", 5),
+    feedMaxItems: readNumber("FEED_MAX_ITEMS", 30),
+    feedDefaultLocation: readString("FEED_DEFAULT_LOCATION", "Saline, MI"),
+    feedDefaultRadiusMiles: readNumber("FEED_DEFAULT_RADIUS_MILES", 30),
+    feedInclusionThreshold: readNumber("FEED_INCLUSION_THRESHOLD", 60)
   };
 }

@@ -19,6 +19,27 @@ export type PairingCodeRow = {
   created_at: string;
 };
 
+export type FeedItemRow = {
+  id: string;
+  device_id: string;
+  dedupe_key: string;
+  title: string;
+  summary: string;
+  category: string;
+  starts_at: string;
+  ends_at: string | null;
+  venue: string;
+  area: string;
+  source_url: string;
+  image_url: string | null;
+  price_text: string | null;
+  reason: string;
+  score: number;
+  distance_miles: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export function openDatabase(databasePath: string): Database.Database {
   if (databasePath !== ":memory:") {
     mkdirSync(dirname(databasePath), { recursive: true });
@@ -74,6 +95,66 @@ export function openDatabase(databasePath: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_devices_token_hash ON devices(token_hash);
     CREATE INDEX IF NOT EXISTS idx_audit_log_device_id ON audit_log(device_id);
     CREATE INDEX IF NOT EXISTS idx_media_device_id ON media(device_id);
+
+    CREATE TABLE IF NOT EXISTS feed_preferences (
+      device_id TEXT PRIMARY KEY,
+      home_location TEXT NOT NULL,
+      radius_miles INTEGER NOT NULL,
+      liked_signals_json TEXT NOT NULL,
+      disliked_signals_json TEXT NOT NULL,
+      hidden_categories_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS feed_refresh_runs (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      item_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS feed_items (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      dedupe_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      category TEXT NOT NULL,
+      starts_at TEXT NOT NULL,
+      ends_at TEXT,
+      venue TEXT NOT NULL,
+      area TEXT NOT NULL,
+      source_url TEXT NOT NULL,
+      image_url TEXT,
+      price_text TEXT,
+      reason TEXT NOT NULL,
+      score REAL NOT NULL,
+      distance_miles REAL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS feed_feedback (
+      device_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      value TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (device_id, item_id),
+      FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE,
+      FOREIGN KEY (item_id) REFERENCES feed_items(id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_items_device_dedupe ON feed_items(device_id, dedupe_key);
+    CREATE INDEX IF NOT EXISTS idx_feed_items_device_starts ON feed_items(device_id, starts_at);
+    CREATE INDEX IF NOT EXISTS idx_feed_feedback_device_value ON feed_feedback(device_id, value);
   `);
 
   const mediaColumns = new Set(

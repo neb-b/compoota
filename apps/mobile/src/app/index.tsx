@@ -11,9 +11,11 @@ import {
   type ImageSourcePropType,
   Keyboard,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -65,7 +67,7 @@ type MessageMedia = {
   height?: number
 }
 
-type ActiveScreen = 'home' | 'media'
+type ActiveScreen = 'home' | 'assistant' | 'media'
 
 type AppleIconProps = {
   color: string
@@ -81,6 +83,45 @@ type Message = {
   media?: MessageMedia[]
   activity?: ActivityStep[]
   isStreaming?: boolean
+}
+
+type FeedFeedback = 'like' | 'dislike' | 'hide' | 'save' | null
+
+type FeedPreferences = {
+  homeLocation: string
+  radiusMiles: number
+  likedSignals: string[]
+  dislikedSignals: string[]
+  hiddenCategories: string[]
+}
+
+type FeedRun = {
+  id: string
+  status: string
+  startedAt: string
+  finishedAt: string | null
+  itemCount: number
+  errorMessage: string | null
+}
+
+type FeedItem = {
+  id: string
+  title: string
+  summary: string
+  category: string
+  startsAt: string
+  endsAt: string | null
+  venue: string
+  area: string
+  sourceUrl: string
+  imageUrl: string | null
+  priceText: string | null
+  reason: string
+  score: number
+  distanceMiles: number | null
+  feedback: FeedFeedback
+  createdAt: string
+  updatedAt: string
 }
 
 type PendingMedia = Omit<MessageMedia, 'remoteUrl'> & {
@@ -374,6 +415,117 @@ function mergeMediaItems(existing: MessageMedia[], next: MessageMedia[]): Messag
   return [...byId.values()]
 }
 
+function parseFeedItems(value: unknown): FeedItem[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .filter((item) => {
+      if (!item || typeof item !== 'object') {
+        return false
+      }
+      const feedItem = item as { id?: unknown; title?: unknown; startsAt?: unknown; sourceUrl?: unknown }
+      return (
+        typeof feedItem.id === 'string' &&
+        typeof feedItem.title === 'string' &&
+        typeof feedItem.startsAt === 'string' &&
+        typeof feedItem.sourceUrl === 'string'
+      )
+    })
+    .map((item) => {
+      const feedItem = item as Record<string, unknown>
+      const feedback =
+        feedItem.feedback === 'like' ||
+        feedItem.feedback === 'dislike' ||
+        feedItem.feedback === 'hide' ||
+        feedItem.feedback === 'save'
+          ? feedItem.feedback
+          : null
+
+      return {
+        id: feedItem.id as string,
+        title: feedItem.title as string,
+        summary: typeof feedItem.summary === 'string' ? feedItem.summary : '',
+        category: typeof feedItem.category === 'string' ? feedItem.category : 'nearby',
+        startsAt: feedItem.startsAt as string,
+        endsAt: typeof feedItem.endsAt === 'string' ? feedItem.endsAt : null,
+        venue: typeof feedItem.venue === 'string' ? feedItem.venue : '',
+        area: typeof feedItem.area === 'string' ? feedItem.area : '',
+        sourceUrl: feedItem.sourceUrl as string,
+        imageUrl: typeof feedItem.imageUrl === 'string' ? feedItem.imageUrl : null,
+        priceText: typeof feedItem.priceText === 'string' ? feedItem.priceText : null,
+        reason: typeof feedItem.reason === 'string' ? feedItem.reason : '',
+        score: typeof feedItem.score === 'number' ? feedItem.score : 0,
+        distanceMiles: typeof feedItem.distanceMiles === 'number' ? feedItem.distanceMiles : null,
+        feedback,
+        createdAt: typeof feedItem.createdAt === 'string' ? feedItem.createdAt : '',
+        updatedAt: typeof feedItem.updatedAt === 'string' ? feedItem.updatedAt : '',
+      }
+    })
+}
+
+function parseFeedPreferences(value: unknown): FeedPreferences | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  const preferences = value as Record<string, unknown>
+  if (typeof preferences.homeLocation !== 'string' || typeof preferences.radiusMiles !== 'number') {
+    return null
+  }
+
+  return {
+    homeLocation: preferences.homeLocation,
+    radiusMiles: preferences.radiusMiles,
+    likedSignals: Array.isArray(preferences.likedSignals)
+      ? preferences.likedSignals.filter((item) => typeof item === 'string')
+      : [],
+    dislikedSignals: Array.isArray(preferences.dislikedSignals)
+      ? preferences.dislikedSignals.filter((item) => typeof item === 'string')
+      : [],
+    hiddenCategories: Array.isArray(preferences.hiddenCategories)
+      ? preferences.hiddenCategories.filter((item) => typeof item === 'string')
+      : [],
+  }
+}
+
+function parseFeedRun(value: unknown): FeedRun | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  const run = value as Record<string, unknown>
+  if (typeof run.id !== 'string' || typeof run.status !== 'string' || typeof run.startedAt !== 'string') {
+    return null
+  }
+
+  return {
+    id: run.id,
+    status: run.status,
+    startedAt: run.startedAt,
+    finishedAt: typeof run.finishedAt === 'string' ? run.finishedAt : null,
+    itemCount: typeof run.itemCount === 'number' ? run.itemCount : 0,
+    errorMessage: typeof run.errorMessage === 'string' ? run.errorMessage : null,
+  }
+}
+
+function formatFeedDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
+function formatFeedMeta(item: FeedItem): string {
+  return [item.venue, item.area, item.priceText].filter(Boolean).join(' · ')
+}
+
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -521,6 +673,15 @@ export default function HomeScreen() {
   const [pendingMedia, setPendingMedia] = useState<PendingMedia[]>([])
   const [mediaSheetVisible, setMediaSheetVisible] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
+  const [feedItems, setFeedItems] = useState<FeedItem[]>([])
+  const [feedPreferences, setFeedPreferences] = useState<FeedPreferences | null>(null)
+  const [feedRun, setFeedRun] = useState<FeedRun | null>(null)
+  const [feedLoading, setFeedLoading] = useState(false)
+  const [feedRefreshing, setFeedRefreshing] = useState(false)
+  const [feedError, setFeedError] = useState('')
+  const [feedSettingsVisible, setFeedSettingsVisible] = useState(false)
+  const [feedLocationDraft, setFeedLocationDraft] = useState('Saline, MI')
+  const [feedRadiusDraft, setFeedRadiusDraft] = useState('30')
   const [mediaLibrary, setMediaLibrary] = useState<MessageMedia[]>([])
   const [mediaLibraryLoading, setMediaLibraryLoading] = useState(false)
   const [mediaLibraryError, setMediaLibraryError] = useState('')
@@ -671,6 +832,166 @@ export default function HomeScreen() {
     closeSidebar()
     Keyboard.dismiss()
   }
+
+  const applyFeedPayload = (data: { items?: unknown; preferences?: unknown; run?: unknown }) => {
+    setFeedItems(parseFeedItems(data.items))
+    const preferences = parseFeedPreferences(data.preferences)
+    if (preferences) {
+      setFeedPreferences(preferences)
+    }
+    setFeedRun(parseFeedRun(data.run))
+  }
+
+  const loadFeed = useCallback(async () => {
+    if (!connection) {
+      return
+    }
+
+    setFeedLoading(true)
+    setFeedError('')
+    try {
+      const response = await fetchWithTimeout(
+        `${connection.serverUrl}/feed`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${connection.deviceToken}`,
+          },
+        },
+        12000,
+      )
+      if (!response.ok) {
+        throw new Error(await readError(response))
+      }
+
+      applyFeedPayload((await response.json()) as { items?: unknown; preferences?: unknown; run?: unknown })
+    } catch (err) {
+      setFeedError(err instanceof Error ? err.message : 'Feed could not be loaded.')
+    } finally {
+      setFeedLoading(false)
+    }
+  }, [connection])
+
+  const refreshFeed = useCallback(async () => {
+    if (!connection || feedRefreshing) {
+      return
+    }
+
+    setFeedRefreshing(true)
+    setFeedError('')
+    try {
+      const response = await fetchWithTimeout(
+        `${connection.serverUrl}/feed/refresh`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${connection.deviceToken}`,
+          },
+        },
+        180000,
+      )
+      if (!response.ok) {
+        throw new Error(await readError(response))
+      }
+
+      applyFeedPayload((await response.json()) as { items?: unknown; run?: unknown })
+    } catch (err) {
+      setFeedError(err instanceof Error ? err.message : 'Feed could not be refreshed.')
+    } finally {
+      setFeedRefreshing(false)
+    }
+  }, [connection, feedRefreshing])
+
+  const sendFeedFeedback = useCallback(
+    async (item: FeedItem, value: 'like' | 'dislike' | 'hide' | 'save' | 'clear') => {
+      if (!connection) {
+        return
+      }
+
+      setFeedError('')
+      try {
+        const response = await fetchWithTimeout(
+          `${connection.serverUrl}/feed/items/${item.id}/feedback`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${connection.deviceToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ value }),
+          },
+          12000,
+        )
+        if (!response.ok) {
+          throw new Error(await readError(response))
+        }
+
+        if (value === 'hide') {
+          setFeedItems((current) => current.filter((candidate) => candidate.id !== item.id))
+        } else {
+          const data = (await response.json()) as { item?: unknown }
+          const [updated] = parseFeedItems(data.item ? [data.item] : [])
+          if (updated) {
+            setFeedItems((current) =>
+              current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+            )
+          }
+        }
+      } catch (err) {
+        setFeedError(err instanceof Error ? err.message : 'Feedback could not be saved.')
+      }
+    },
+    [connection],
+  )
+
+  const openFeedSettings = () => {
+    setFeedLocationDraft(feedPreferences?.homeLocation ?? 'Saline, MI')
+    setFeedRadiusDraft(String(feedPreferences?.radiusMiles ?? 30))
+    setFeedSettingsVisible(true)
+  }
+
+  const saveFeedSettings = useCallback(async () => {
+    if (!connection) {
+      return
+    }
+
+    const radiusMiles = Number(feedRadiusDraft)
+    if (!Number.isFinite(radiusMiles) || radiusMiles <= 0) {
+      setFeedError('Enter a valid radius.')
+      return
+    }
+
+    setFeedError('')
+    try {
+      const response = await fetchWithTimeout(
+        `${connection.serverUrl}/feed/preferences`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${connection.deviceToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            homeLocation: feedLocationDraft.trim() || 'Saline, MI',
+            radiusMiles: Math.round(radiusMiles),
+          }),
+        },
+        12000,
+      )
+      if (!response.ok) {
+        throw new Error(await readError(response))
+      }
+
+      const preferences = parseFeedPreferences(await response.json())
+      if (preferences) {
+        setFeedPreferences(preferences)
+      }
+      setFeedSettingsVisible(false)
+      await loadFeed()
+    } catch (err) {
+      setFeedError(err instanceof Error ? err.message : 'Feed settings could not be saved.')
+    }
+  }, [connection, feedLocationDraft, feedRadiusDraft, loadFeed])
 
   const loadMediaLibrary = useCallback(async () => {
     if (!connection) {
@@ -961,6 +1282,12 @@ export default function HomeScreen() {
   }, [connection, loading, messages])
 
   useEffect(() => {
+    if (activeScreen === 'home') {
+      loadFeed()
+    }
+  }, [activeScreen, loadFeed])
+
+  useEffect(() => {
     if (activeScreen === 'media') {
       loadMediaLibrary()
     }
@@ -1023,6 +1350,9 @@ export default function HomeScreen() {
       setPairingCode('')
       setDeviceName(cleanedName)
       setMessages([])
+      setFeedItems([])
+      setFeedPreferences(null)
+      setFeedRun(null)
       setMediaLibrary([])
       setActiveScreen('home')
     } catch (err) {
@@ -1207,6 +1537,10 @@ export default function HomeScreen() {
     setPendingMedia([])
     setError('')
     setMessages([])
+    setFeedItems([])
+    setFeedPreferences(null)
+    setFeedRun(null)
+    setFeedError('')
     setMediaLibrary([])
     setMediaLibraryError('')
     setSelectedMedia(null)
@@ -1223,7 +1557,7 @@ export default function HomeScreen() {
     setPendingMedia([])
     setSelectedActivityMessageId(null)
     setMessages([])
-    setActiveScreen('home')
+    setActiveScreen('assistant')
     scrollRef.current?.scrollTo({ y: 0, animated: true })
   }
 
@@ -1326,7 +1660,7 @@ export default function HomeScreen() {
               </Text>
               <View style={styles.sidebarNav}>
                 <Pressable
-                  accessibilityLabel="Open chat"
+                  accessibilityLabel="Open home feed"
                   onPress={() => showScreen('home')}
                   style={({ pressed }) => [
                     styles.sidebarNavItem,
@@ -1341,6 +1675,24 @@ export default function HomeScreen() {
                     ]}
                   >
                     Home
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityLabel="Open assistant"
+                  onPress={() => showScreen('assistant')}
+                  style={({ pressed }) => [
+                    styles.sidebarNavItem,
+                    activeScreen === 'assistant' && styles.sidebarNavItemActive,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.sidebarNavText,
+                      activeScreen === 'assistant' && styles.sidebarNavTextActive,
+                    ]}
+                  >
+                    Assistant
                   </Text>
                 </Pressable>
                 <Pressable
@@ -1408,7 +1760,28 @@ export default function HomeScreen() {
                       </GlassSurface>
                     </Pressable>
 
-                  {activeScreen === 'home' && hasMessages ? (
+                  {activeScreen === 'home' ? (
+                    <Pressable
+                      accessibilityLabel="Refresh feed"
+                      disabled={feedRefreshing}
+                      onPress={refreshFeed}
+                      style={({ pressed }) => [styles.topIconButtonHitbox, pressed && styles.glassPressed]}
+                    >
+                      <GlassSurface
+                        colorScheme={isDark ? 'dark' : 'light'}
+                        enabled={liquidGlassEnabled}
+                        isInteractive
+                        style={styles.topIconButton}
+                        tintColor={colors.glassTint}
+                      >
+                        {feedRefreshing ? (
+                          <ActivityIndicator color={colors.text} size="small" />
+                        ) : (
+                          <AppleIcon color={colors.text} name="arrow.clockwise" size={21} />
+                        )}
+                      </GlassSurface>
+                    </Pressable>
+                  ) : activeScreen === 'assistant' && hasMessages ? (
                     <Pressable
                       accessibilityLabel="Start new chat"
                       onPress={startFreshChat}
@@ -1428,6 +1801,138 @@ export default function HomeScreen() {
                 </View>
 
                 {activeScreen === 'home' ? (
+                  <ScrollView
+                    contentContainerStyle={styles.feedContent}
+                    keyboardShouldPersistTaps="handled"
+                    refreshControl={
+                      <RefreshControl
+                        refreshing={feedRefreshing}
+                        onRefresh={refreshFeed}
+                        tintColor={colors.text}
+                      />
+                    }
+                    style={styles.messages}
+                  >
+                    <View style={styles.feedHeader}>
+                      <Text style={styles.feedEyebrow}>Nearby</Text>
+                      <View style={styles.feedTitleRow}>
+                        <Text style={styles.feedTitle}>{feedPreferences?.homeLocation ?? 'Saline, MI'}</Text>
+                        <Pressable
+                          accessibilityLabel="Edit feed settings"
+                          onPress={openFeedSettings}
+                          style={({ pressed }) => [styles.feedSettingsButton, pressed && styles.pressed]}
+                        >
+                          <AppleIcon color={colors.text} name="slider.horizontal.3" size={18} />
+                        </Pressable>
+                      </View>
+                      <Text style={styles.feedSubtitle}>
+                        Upcoming things within {feedPreferences?.radiusMiles ?? 30} miles, sorted by time.
+                      </Text>
+                      {feedRun?.finishedAt ? (
+                        <Text style={styles.feedUpdated}>Updated {formatFeedDate(feedRun.finishedAt)}</Text>
+                      ) : null}
+                    </View>
+
+                    {feedLoading ? (
+                      <ActivityIndicator color={colors.text} style={styles.feedLoader} />
+                    ) : feedError ? (
+                      <Text style={styles.feedEmptyText}>{feedError}</Text>
+                    ) : feedItems.length ? (
+                      <View style={styles.feedList}>
+                        {feedItems.map((item) => (
+                          <View key={item.id} style={styles.feedCard}>
+                            {item.imageUrl ? (
+                              <Image
+                                accessibilityLabel={item.title}
+                                resizeMode="cover"
+                                source={{ uri: item.imageUrl }}
+                                style={styles.feedCardImage}
+                              />
+                            ) : null}
+                            <View style={styles.feedCardTop}>
+                              <Text style={styles.feedCategory}>{item.category}</Text>
+                              <Text style={styles.feedDate}>{formatFeedDate(item.startsAt)}</Text>
+                            </View>
+                            <Text style={styles.feedCardTitle}>{item.title}</Text>
+                            {formatFeedMeta(item) ? (
+                              <Text style={styles.feedMeta}>{formatFeedMeta(item)}</Text>
+                            ) : null}
+                            <Text style={styles.feedSummary}>{item.summary}</Text>
+                            <Text style={styles.feedReason}>{item.reason}</Text>
+                            <View style={styles.feedActions}>
+                              <Pressable
+                                accessibilityLabel="Like feed item"
+                                onPress={() => sendFeedFeedback(item, item.feedback === 'like' ? 'clear' : 'like')}
+                                style={({ pressed }) => [
+                                  styles.feedActionButton,
+                                  item.feedback === 'like' && styles.feedActionButtonActive,
+                                  pressed && styles.pressed,
+                                ]}
+                              >
+                                <AppleIcon
+                                  color={item.feedback === 'like' ? colors.actionText : colors.text}
+                                  name="hand.thumbsup"
+                                  size={18}
+                                />
+                              </Pressable>
+                              <Pressable
+                                accessibilityLabel="Dislike feed item"
+                                onPress={() =>
+                                  sendFeedFeedback(item, item.feedback === 'dislike' ? 'clear' : 'dislike')
+                                }
+                                style={({ pressed }) => [
+                                  styles.feedActionButton,
+                                  item.feedback === 'dislike' && styles.feedActionButtonActive,
+                                  pressed && styles.pressed,
+                                ]}
+                              >
+                                <AppleIcon
+                                  color={item.feedback === 'dislike' ? colors.actionText : colors.text}
+                                  name="hand.thumbsdown"
+                                  size={18}
+                                />
+                              </Pressable>
+                              <Pressable
+                                accessibilityLabel="Save feed item"
+                                onPress={() => sendFeedFeedback(item, item.feedback === 'save' ? 'clear' : 'save')}
+                                style={({ pressed }) => [
+                                  styles.feedActionButton,
+                                  item.feedback === 'save' && styles.feedActionButtonActive,
+                                  pressed && styles.pressed,
+                                ]}
+                              >
+                                <AppleIcon
+                                  color={item.feedback === 'save' ? colors.actionText : colors.text}
+                                  name="bookmark"
+                                  size={18}
+                                />
+                              </Pressable>
+                              <Pressable
+                                accessibilityLabel="Hide feed item"
+                                onPress={() => sendFeedFeedback(item, 'hide')}
+                                style={({ pressed }) => [styles.feedActionButton, pressed && styles.pressed]}
+                              >
+                                <AppleIcon color={colors.text} name="eye.slash" size={18} />
+                              </Pressable>
+                              <Pressable
+                                accessibilityLabel="Open source"
+                                onPress={() => Linking.openURL(item.sourceUrl).catch(() => undefined)}
+                                style={({ pressed }) => [styles.feedOpenButton, pressed && styles.pressed]}
+                              >
+                                <Text style={styles.feedOpenButtonText}>Open</Text>
+                              </Pressable>
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                    ) : (
+                      <View style={styles.feedEmpty}>
+                        <Text style={styles.feedEmptyTitle}>No upcoming items yet</Text>
+                        <Text style={styles.feedEmptyText}>Pull to refresh or tap the refresh button.</Text>
+                      </View>
+                    )}
+                  </ScrollView>
+                ) : activeScreen === 'assistant' ? (
                   <>
                     <ScrollView
                       automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
@@ -1581,6 +2086,55 @@ export default function HomeScreen() {
             >
               <Text style={styles.mediaSheetCancelText}>Cancel</Text>
             </Pressable>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setFeedSettingsVisible(false)}
+        transparent
+        visible={feedSettingsVisible}
+      >
+        <View style={styles.mediaModalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setFeedSettingsVisible(false)} />
+          <View style={styles.feedSettingsSheet}>
+            <Text style={styles.feedSettingsTitle}>Feed settings</Text>
+            <View style={styles.field}>
+              <Text style={styles.label}>location</Text>
+              <TextInput
+                autoCapitalize="words"
+                onChangeText={setFeedLocationDraft}
+                placeholder="Saline, MI"
+                placeholderTextColor={colors.placeholder}
+                style={styles.input}
+                value={feedLocationDraft}
+              />
+            </View>
+            <View style={styles.field}>
+              <Text style={styles.label}>radius miles</Text>
+              <TextInput
+                keyboardType="number-pad"
+                onChangeText={setFeedRadiusDraft}
+                placeholder="30"
+                placeholderTextColor={colors.placeholder}
+                style={styles.input}
+                value={feedRadiusDraft}
+              />
+            </View>
+            <View style={styles.feedSettingsActions}>
+              <Pressable
+                onPress={() => setFeedSettingsVisible(false)}
+                style={({ pressed }) => [styles.feedSettingsSecondary, pressed && styles.pressed]}
+              >
+                <Text style={styles.feedSettingsSecondaryText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={saveFeedSettings}
+                style={({ pressed }) => [styles.feedSettingsPrimary, pressed && styles.pressed]}
+              >
+                <Text style={styles.feedSettingsPrimaryText}>Save</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
@@ -2048,6 +2602,177 @@ function createStyles(
       fontSize: 13,
       zIndex: 2,
     },
+    feedContent: {
+      paddingTop: 86,
+      paddingHorizontal: 18,
+      paddingBottom: Math.max(bottomInset, 18) + 28,
+    },
+    feedHeader: {
+      maxWidth: 560,
+      width: '100%',
+      alignSelf: 'center',
+      paddingBottom: 22,
+    },
+    feedEyebrow: {
+      color: colors.secondaryText,
+      fontSize: 13,
+      lineHeight: 18,
+      fontWeight: '700',
+      textTransform: 'uppercase',
+      letterSpacing: 0,
+    },
+    feedTitle: {
+      color: colors.text,
+      fontSize: 38,
+      lineHeight: 43,
+      fontWeight: '800',
+      letterSpacing: 0,
+      flex: 1,
+    },
+    feedTitleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      marginTop: 3,
+    },
+    feedSettingsButton: {
+      width: 38,
+      height: 38,
+      borderRadius: 19,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+    },
+    feedSubtitle: {
+      color: colors.secondaryText,
+      fontSize: 15,
+      lineHeight: 21,
+      marginTop: 6,
+    },
+    feedUpdated: {
+      color: colors.subtleText,
+      fontSize: 12,
+      lineHeight: 17,
+      marginTop: 8,
+    },
+    feedLoader: {
+      marginTop: 28,
+    },
+    feedList: {
+      maxWidth: 560,
+      width: '100%',
+      alignSelf: 'center',
+      gap: 12,
+    },
+    feedCard: {
+      borderRadius: 18,
+      padding: 14,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.82)',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      gap: 8,
+    },
+    feedCardImage: {
+      width: '100%',
+      height: 168,
+      borderRadius: 13,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+      marginBottom: 4,
+    },
+    feedCardTop: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+    },
+    feedCategory: {
+      color: colors.secondaryText,
+      fontSize: 12,
+      lineHeight: 16,
+      fontWeight: '700',
+      textTransform: 'uppercase',
+      letterSpacing: 0,
+    },
+    feedDate: {
+      color: colors.text,
+      fontSize: 13,
+      lineHeight: 17,
+      fontWeight: '700',
+      flexShrink: 0,
+    },
+    feedCardTitle: {
+      color: colors.text,
+      fontSize: 21,
+      lineHeight: 26,
+      fontWeight: '800',
+      letterSpacing: 0,
+    },
+    feedMeta: {
+      color: colors.secondaryText,
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    feedSummary: {
+      color: colors.text,
+      fontSize: 15,
+      lineHeight: 22,
+    },
+    feedReason: {
+      color: colors.secondaryText,
+      fontSize: 13,
+      lineHeight: 19,
+    },
+    feedActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingTop: 4,
+    },
+    feedActionButton: {
+      width: 38,
+      height: 38,
+      borderRadius: 19,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+    },
+    feedActionButtonActive: {
+      backgroundColor: colors.action,
+    },
+    feedOpenButton: {
+      height: 38,
+      borderRadius: 19,
+      paddingHorizontal: 14,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginLeft: 'auto',
+      backgroundColor: colors.action,
+    },
+    feedOpenButtonText: {
+      color: colors.actionText,
+      fontSize: 13,
+      fontWeight: '800',
+    },
+    feedEmpty: {
+      maxWidth: 560,
+      width: '100%',
+      alignSelf: 'center',
+      paddingTop: 56,
+      alignItems: 'center',
+    },
+    feedEmptyTitle: {
+      color: colors.text,
+      fontSize: 18,
+      lineHeight: 24,
+      fontWeight: '800',
+    },
+    feedEmptyText: {
+      color: colors.secondaryText,
+      fontSize: 15,
+      lineHeight: 22,
+      textAlign: 'center',
+      marginTop: 8,
+    },
     mediaContent: {
       paddingTop: 86,
       paddingHorizontal: 18,
@@ -2205,6 +2930,57 @@ function createStyles(
       shadowOpacity: 0.16,
       shadowRadius: 24,
       shadowOffset: { width: 0, height: 10 },
+    },
+    feedSettingsSheet: {
+      marginHorizontal: 14,
+      marginBottom: Math.max(bottomInset, 14) + 8,
+      borderRadius: 22,
+      padding: 16,
+      gap: 14,
+      backgroundColor: isDark ? '#1d1d1d' : '#ffffff',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      shadowColor,
+      shadowOpacity: 0.16,
+      shadowRadius: 24,
+      shadowOffset: { width: 0, height: 10 },
+    },
+    feedSettingsTitle: {
+      color: colors.text,
+      fontSize: 20,
+      lineHeight: 25,
+      fontWeight: '800',
+    },
+    feedSettingsActions: {
+      flexDirection: 'row',
+      gap: 10,
+      paddingTop: 4,
+    },
+    feedSettingsSecondary: {
+      flex: 1,
+      height: 48,
+      borderRadius: 24,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+    },
+    feedSettingsSecondaryText: {
+      color: colors.text,
+      fontSize: 15,
+      fontWeight: '700',
+    },
+    feedSettingsPrimary: {
+      flex: 1,
+      height: 48,
+      borderRadius: 24,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.action,
+    },
+    feedSettingsPrimaryText: {
+      color: colors.actionText,
+      fontSize: 15,
+      fontWeight: '800',
     },
     mediaSheetAction: {
       height: 50,

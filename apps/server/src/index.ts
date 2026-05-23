@@ -10,6 +10,15 @@ import { AuthError, verifyDeviceToken, verifySetupSecret } from "./auth.js";
 import { loadConfig, type Config } from "./config.js";
 import { createDeviceToken, createPairingCode, hashSecret } from "./crypto.js";
 import { openDatabase, type PairingCodeRow } from "./db.js";
+import {
+  getOrCreateFeedPreferences,
+  latestFeedRun,
+  listFeedItems,
+  refreshFeedForDevice,
+  setFeedFeedback,
+  startFeedScheduler,
+  updateFeedPreferences
+} from "./feed.js";
 import { type CommandActivity, runHermesCommand } from "./hermes.js";
 import {
   deleteMediaFromR2,
@@ -41,6 +50,18 @@ const commandSchema = z.object({
     .optional()
 }).refine((body) => body.text.length > 0 || (body.media?.length ?? 0) > 0, {
   message: "Text or media is required"
+});
+
+const feedPreferencesSchema = z.object({
+  homeLocation: z.string().trim().min(1).max(120).optional(),
+  radiusMiles: z.number().int().positive().max(100).optional(),
+  likedSignals: z.array(z.string().trim().min(1).max(80)).max(40).optional(),
+  dislikedSignals: z.array(z.string().trim().min(1).max(80)).max(40).optional(),
+  hiddenCategories: z.array(z.string().trim().min(1).max(80)).max(40).optional()
+});
+
+const feedFeedbackSchema = z.object({
+  value: z.enum(["like", "dislike", "hide", "save", "clear"])
 });
 
 type CommandBody = z.infer<typeof commandSchema>;
@@ -427,6 +448,45 @@ function createServer(config: Config, db: Database.Database) {
     return { media: await mediaRowsResponse(media, config) };
   });
 
+  app.get("/feed/preferences", async (request) => {
+    const device = verifyDeviceToken(request, db, config);
+    return getOrCreateFeedPreferences(db, config, device.id);
+  });
+
+  app.put("/feed/preferences", async (request) => {
+    const device = verifyDeviceToken(request, db, config);
+    const body = validateBody(feedPreferencesSchema, request.body);
+    return updateFeedPreferences(db, config, device.id, body);
+  });
+
+  app.get("/feed", async (request) => {
+    const device = verifyDeviceToken(request, db, config);
+    const preferences = getOrCreateFeedPreferences(db, config, device.id);
+    return {
+      preferences,
+      run: latestFeedRun(db, device.id),
+      items: listFeedItems(db, device.id)
+    };
+  });
+
+  app.post("/feed/refresh", async (request) => {
+    const device = verifyDeviceToken(request, db, config);
+    return refreshFeedForDevice(db, config, device.id);
+  });
+
+  app.post("/feed/items/:id/feedback", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = validateBody(feedFeedbackSchema, request.body);
+    const item = setFeedFeedback(db, device.id, params.id, body.value);
+    if (!item) {
+      reply.status(404).send({ error: "Feed item not found" });
+      return;
+    }
+
+    return { item };
+  });
+
   app.get("/media/:id", async (request, reply) => {
     const device = verifyDeviceToken(request, db, config);
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
@@ -674,6 +734,8 @@ function createServer(config: Config, db: Database.Database) {
 const config = loadConfig();
 const db = openDatabase(config.databasePath);
 const app = createServer(config, db);
+
+startFeedScheduler(db, config);
 
 app.listen({ port: config.port, host: "0.0.0.0" }).catch((error) => {
   app.log.error(error);
