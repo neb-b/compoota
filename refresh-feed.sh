@@ -46,6 +46,10 @@ pretty_json() {
   fi
 }
 
+running_count() {
+  node -e "let body=''; process.stdin.on('data', c => body += c); process.stdin.on('end', () => { const data = JSON.parse(body); console.log((data.runs || []).filter((run) => run.status === 'running').length); });"
+}
+
 echo "== Feed status before refresh =="
 request GET /setup/feed/status | pretty_json
 
@@ -55,15 +59,32 @@ echo "This calls Hermes in oneshot mode, or deterministic sample data in mock mo
 request POST /setup/feed/refresh | pretty_json
 
 echo
+echo "== Waiting for running refreshes =="
+for attempt in $(seq 1 36); do
+  status_json="$(request GET /setup/feed/status)"
+  count="$(printf '%s' "${status_json}" | running_count)"
+  if [[ "${count}" == "0" ]]; then
+    echo "No running feed refreshes remain."
+    break
+  fi
+  echo "Still running (${count}); polling again in 10s... (${attempt}/36)"
+  sleep 10
+done
+
+echo
 echo "== Feed status after refresh =="
 request GET /setup/feed/status | pretty_json
 
 echo
 echo "== Recent server logs =="
-if docker compose ps house-server >/dev/null 2>&1; then
-  docker compose logs --tail=80 house-server
-elif command -v docker-compose >/dev/null 2>&1; then
-  docker-compose logs --tail=80 house-server
+if [[ "${1:-}" == "--logs" ]] && docker compose ps house-server >/dev/null 2>&1; then
+  docker compose logs --tail=80 house-server || echo "Could not read Docker logs. Try: sudo docker compose logs --tail=80 house-server"
+elif [[ "${1:-}" == "--logs" ]] && sudo -n docker compose ps house-server >/dev/null 2>&1; then
+  sudo docker compose logs --tail=80 house-server || true
+elif [[ "${1:-}" == "--logs" ]] && command -v docker-compose >/dev/null 2>&1 && docker-compose ps house-server >/dev/null 2>&1; then
+  docker-compose logs --tail=80 house-server || echo "Could not read Docker logs. Try: sudo docker-compose logs --tail=80 house-server"
+elif [[ "${1:-}" == "--logs" ]] && command -v docker-compose >/dev/null 2>&1 && sudo -n docker-compose ps house-server >/dev/null 2>&1; then
+  sudo docker-compose logs --tail=80 house-server || true
 else
-  echo "Docker Compose not found; skipping logs."
+  echo "Skipping Docker logs. Run ./refresh-feed.sh --logs, or use sudo docker compose logs --tail=80 house-server."
 fi

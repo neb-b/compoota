@@ -12,6 +12,7 @@ import { createDeviceToken, createPairingCode, hashSecret } from "./crypto.js";
 import { openDatabase, type PairingCodeRow } from "./db.js";
 import {
   getOrCreateFeedPreferences,
+  failStaleFeedRuns,
   latestFeedRun,
   listFeedItems,
   refreshFeedForAllDevices,
@@ -408,6 +409,7 @@ function createServer(config: Config, db: Database.Database) {
 
   app.get("/setup/feed/status", async (request) => {
     verifySetupSecret(request, config);
+    failStaleFeedRuns(db, config);
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'feed_%' ORDER BY name")
       .all() as Array<{ name: string }>;

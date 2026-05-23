@@ -75,6 +75,11 @@ export type FeedRefreshAllResult = {
   result: FeedRefreshResponse;
 };
 
+export type FeedRefreshBusyResult = {
+  busy: true;
+  runningRuns: FeedRefreshResponse["run"][];
+};
+
 const hermesFeedItemSchema = z.object({
   title: z.string().trim().min(1).max(180),
   summary: z.string().trim().min(1).max(500),
@@ -484,12 +489,33 @@ export function latestFeedRun(db: Database.Database, deviceId: string): FeedRefr
 let schedulerRunning = false;
 let schedulerTimer: ReturnType<typeof setTimeout> | null = null;
 
+export function runningFeedRuns(db: Database.Database): FeedRefreshResponse["run"][] {
+  const rows = db
+    .prepare("SELECT * FROM feed_refresh_runs WHERE status = 'running' ORDER BY started_at DESC")
+    .all() as FeedRefreshRunRow[];
+  return rows.map(runResponse);
+}
+
+export function failStaleFeedRuns(db: Database.Database, config: Config): number {
+  const staleBefore = new Date(Date.now() - (config.hermesTimeoutSeconds + 30) * 1000).toISOString();
+  const result = db
+    .prepare(
+      "UPDATE feed_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE status = 'running' AND started_at < ?"
+    )
+    .run(nowIso(), `Feed refresh exceeded ${config.hermesTimeoutSeconds}s and was marked stale.`, staleBefore);
+  return result.changes;
+}
+
 export async function refreshFeedForAllDevices(
   db: Database.Database,
   config: Config
-): Promise<FeedRefreshAllResult[]> {
+): Promise<FeedRefreshAllResult[] | FeedRefreshBusyResult> {
+  failStaleFeedRuns(db, config);
   if (schedulerRunning) {
-    return [];
+    return {
+      busy: true,
+      runningRuns: runningFeedRuns(db)
+    };
   }
   schedulerRunning = true;
   try {

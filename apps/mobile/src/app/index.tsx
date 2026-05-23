@@ -1761,26 +1761,31 @@ export default function HomeScreen() {
                     </Pressable>
 
                   {activeScreen === 'home' ? (
-                    <Pressable
-                      accessibilityLabel="Refresh feed"
-                      disabled={feedRefreshing}
-                      onPress={refreshFeed}
-                      style={({ pressed }) => [styles.topIconButtonHitbox, pressed && styles.glassPressed]}
+                    <GlassSurface
+                      colorScheme={isDark ? 'dark' : 'light'}
+                      enabled={liquidGlassEnabled}
+                      isInteractive
+                      style={styles.feedTopMenu}
+                      tintColor={colors.glassTint}
                     >
-                      <GlassSurface
-                        colorScheme={isDark ? 'dark' : 'light'}
-                        enabled={liquidGlassEnabled}
-                        isInteractive
-                        style={styles.topIconButton}
-                        tintColor={colors.glassTint}
+                      <Pressable
+                        accessibilityLabel="Edit feed settings"
+                        onPress={openFeedSettings}
+                        style={({ pressed }) => [styles.feedTopMenuButton, pressed && styles.pressed]}
                       >
-                        {feedRefreshing ? (
-                          <ActivityIndicator color={colors.text} size="small" />
-                        ) : (
-                          <AppleIcon color={colors.text} name="arrow.clockwise" size={21} />
-                        )}
-                      </GlassSurface>
-                    </Pressable>
+                        <AppleIcon color={colors.text} name="slider.horizontal.3" size={18} />
+                      </Pressable>
+                      <View style={styles.feedTopMenuDivider} />
+                      <Pressable
+                        accessibilityLabel="Refresh feed"
+                        disabled={feedRefreshing}
+                        onPress={refreshFeed}
+                        style={({ pressed }) => [styles.feedTopMenuButton, pressed && styles.pressed]}
+                      >
+                        {feedRefreshing ? <ActivityIndicator color={colors.text} size="small" /> : null}
+                        {!feedRefreshing ? <AppleIcon color={colors.text} name="arrow.clockwise" size={19} /> : null}
+                      </Pressable>
+                    </GlassSurface>
                   ) : activeScreen === 'assistant' && hasMessages ? (
                     <Pressable
                       accessibilityLabel="Start new chat"
@@ -1813,26 +1818,6 @@ export default function HomeScreen() {
                     }
                     style={styles.messages}
                   >
-                    <View style={styles.feedHeader}>
-                      <Text style={styles.feedEyebrow}>Nearby</Text>
-                      <View style={styles.feedTitleRow}>
-                        <Text style={styles.feedTitle}>{feedPreferences?.homeLocation ?? 'Saline, MI'}</Text>
-                        <Pressable
-                          accessibilityLabel="Edit feed settings"
-                          onPress={openFeedSettings}
-                          style={({ pressed }) => [styles.feedSettingsButton, pressed && styles.pressed]}
-                        >
-                          <AppleIcon color={colors.text} name="slider.horizontal.3" size={18} />
-                        </Pressable>
-                      </View>
-                      <Text style={styles.feedSubtitle}>
-                        Upcoming things within {feedPreferences?.radiusMiles ?? 30} miles, sorted by time.
-                      </Text>
-                      {feedRun?.finishedAt ? (
-                        <Text style={styles.feedUpdated}>Updated {formatFeedDate(feedRun.finishedAt)}</Text>
-                      ) : null}
-                    </View>
-
                     {feedLoading ? (
                       <ActivityIndicator color={colors.text} style={styles.feedLoader} />
                     ) : feedError ? (
@@ -2438,6 +2423,41 @@ function createStyles(
       shadowRadius: 18,
       shadowOffset: { width: 0, height: 10 },
     },
+    feedTopMenu: {
+      width: 94,
+      height: 46,
+      borderRadius: 23,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: liquidGlassEnabled
+        ? 'transparent'
+        : isDark
+          ? 'rgba(24,24,24,0.82)'
+          : 'rgba(255,255,255,0.82)',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: liquidGlassEnabled
+        ? isDark
+          ? 'rgba(255,255,255,0.22)'
+          : 'rgba(255,255,255,0.72)'
+        : colors.border,
+      shadowColor,
+      shadowOpacity: 0.14,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 10 },
+      overflow: 'hidden',
+    },
+    feedTopMenuButton: {
+      width: 46,
+      height: 46,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    feedTopMenuDivider: {
+      width: StyleSheet.hairlineWidth,
+      height: 22,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.12)',
+    },
     sidebarUnderlay: {
       position: 'absolute',
       top: 0,
@@ -2606,54 +2626,6 @@ function createStyles(
       paddingTop: 86,
       paddingHorizontal: 18,
       paddingBottom: Math.max(bottomInset, 18) + 28,
-    },
-    feedHeader: {
-      maxWidth: 560,
-      width: '100%',
-      alignSelf: 'center',
-      paddingBottom: 22,
-    },
-    feedEyebrow: {
-      color: colors.secondaryText,
-      fontSize: 13,
-      lineHeight: 18,
-      fontWeight: '700',
-      textTransform: 'uppercase',
-      letterSpacing: 0,
-    },
-    feedTitle: {
-      color: colors.text,
-      fontSize: 38,
-      lineHeight: 43,
-      fontWeight: '800',
-      letterSpacing: 0,
-      flex: 1,
-    },
-    feedTitleRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      marginTop: 3,
-    },
-    feedSettingsButton: {
-      width: 38,
-      height: 38,
-      borderRadius: 19,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
-    },
-    feedSubtitle: {
-      color: colors.secondaryText,
-      fontSize: 15,
-      lineHeight: 21,
-      marginTop: 6,
-    },
-    feedUpdated: {
-      color: colors.subtleText,
-      fontSize: 12,
-      lineHeight: 17,
-      marginTop: 8,
     },
     feedLoader: {
       marginTop: 28,
