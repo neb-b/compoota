@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import DateTimePicker from '@react-native-community/datetimepicker'
 import Constants from 'expo-constants'
 import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect'
 import * as ImagePicker from 'expo-image-picker'
@@ -114,6 +115,7 @@ type FeedItem = {
   category: string
   startsAt: string
   endsAt: string | null
+  allDay: boolean
   venue: string
   area: string
   sourceUrl: string
@@ -488,6 +490,7 @@ function parseFeedItems(value: unknown): FeedItem[] {
         category: typeof feedItem.category === 'string' ? feedItem.category : 'nearby',
         startsAt: feedItem.startsAt as string,
         endsAt: typeof feedItem.endsAt === 'string' ? feedItem.endsAt : null,
+        allDay: feedItem.allDay === true,
         venue: typeof feedItem.venue === 'string' ? feedItem.venue : '',
         area: typeof feedItem.area === 'string' ? feedItem.area : '',
         sourceUrl: feedItem.sourceUrl as string,
@@ -556,6 +559,9 @@ function formatFeedDate(item: FeedItem): string {
     month: 'short',
     day: 'numeric',
   })
+  if (item.allDay) {
+    return dateFormatter.format(startsAt)
+  }
   const timeFormatter = new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: '2-digit',
@@ -661,6 +667,16 @@ function formatMaintenanceDate(value: string | null): string {
     day: 'numeric',
     year: 'numeric',
   }).format(date)
+}
+
+function combineEventDateTime(dateValue: Date, timeValue: Date, includesTime: boolean): string {
+  const next = new Date(dateValue)
+  if (includesTime) {
+    next.setHours(timeValue.getHours(), timeValue.getMinutes(), 0, 0)
+  } else {
+    next.setHours(12, 0, 0, 0)
+  }
+  return next.toISOString()
 }
 
 function streamCommandRequest({
@@ -810,7 +826,9 @@ export default function HomeScreen() {
   const [feedError, setFeedError] = useState('')
   const [feedSettingsVisible, setFeedSettingsVisible] = useState(false)
   const [newFeedEventVisible, setNewFeedEventVisible] = useState(false)
-  const [newFeedEventDate, setNewFeedEventDate] = useState('')
+  const [newFeedEventDate, setNewFeedEventDate] = useState(() => new Date())
+  const [newFeedEventTime, setNewFeedEventTime] = useState(() => new Date())
+  const [newFeedEventHasTime, setNewFeedEventHasTime] = useState(false)
   const [newFeedEventText, setNewFeedEventText] = useState('')
   const [newFeedEventRemind, setNewFeedEventRemind] = useState(false)
   const [newFeedEventSaving, setNewFeedEventSaving] = useState(false)
@@ -1169,15 +1187,12 @@ export default function HomeScreen() {
 
   const openNewFeedEvent = () => {
     const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000)
-    tomorrow.setMinutes(0, 0, 0)
-    setNewFeedEventDate(
-      new Intl.DateTimeFormat(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-      }).format(tomorrow),
-    )
+    tomorrow.setHours(12, 0, 0, 0)
+    const defaultTime = new Date(tomorrow)
+    defaultTime.setHours(19, 0, 0, 0)
+    setNewFeedEventDate(tomorrow)
+    setNewFeedEventTime(defaultTime)
+    setNewFeedEventHasTime(false)
     setNewFeedEventText('')
     setNewFeedEventRemind(false)
     setNewFeedEventVisible(true)
@@ -1200,7 +1215,8 @@ export default function HomeScreen() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            startsAt: newFeedEventDate,
+            startsAt: combineEventDateTime(newFeedEventDate, newFeedEventTime, newFeedEventHasTime),
+            allDay: !newFeedEventHasTime,
             text: newFeedEventText,
             remindOneWeekBefore: newFeedEventRemind,
           }),
@@ -1231,7 +1247,15 @@ export default function HomeScreen() {
     } finally {
       setNewFeedEventSaving(false)
     }
-  }, [connection, newFeedEventDate, newFeedEventRemind, newFeedEventSaving, newFeedEventText])
+  }, [
+    connection,
+    newFeedEventDate,
+    newFeedEventHasTime,
+    newFeedEventRemind,
+    newFeedEventSaving,
+    newFeedEventText,
+    newFeedEventTime,
+  ])
 
   const saveFeedSettings = useCallback(async () => {
     if (!connection) {
@@ -2663,15 +2687,46 @@ export default function HomeScreen() {
           <View style={styles.feedSettingsSheet}>
             <Text style={styles.feedSettingsTitle}>New event</Text>
             <View style={styles.field}>
-              <TextInput
-                autoCapitalize="words"
-                onChangeText={setNewFeedEventDate}
-                placeholder="May 30, 7:00 PM"
-                placeholderTextColor={colors.placeholder}
-                style={styles.input}
+              <Text style={styles.label}>date</Text>
+              <DateTimePicker
+                display={Platform.OS === 'ios' ? 'inline' : 'default'}
+                minimumDate={new Date()}
+                mode="date"
+                onChange={(_event, selectedDate) => {
+                  if (selectedDate) {
+                    setNewFeedEventDate(selectedDate)
+                  }
+                }}
+                style={styles.eventDatePicker}
                 value={newFeedEventDate}
               />
             </View>
+            <Pressable
+              accessibilityLabel="Include event time"
+              onPress={() => setNewFeedEventHasTime((current) => !current)}
+              style={({ pressed }) => [styles.reminderToggle, pressed && styles.pressed]}
+            >
+              <View style={[styles.reminderCheckbox, newFeedEventHasTime && styles.reminderCheckboxActive]}>
+                {newFeedEventHasTime ? <AppleIcon color={colors.actionText} name="checkmark" size={15} /> : null}
+              </View>
+              <Text style={styles.reminderToggleText}>Add time</Text>
+            </Pressable>
+            {newFeedEventHasTime ? (
+              <View style={styles.eventTimeRow}>
+                <Text style={styles.label}>time</Text>
+                <DateTimePicker
+                  display={Platform.OS === 'ios' ? 'compact' : 'default'}
+                  mode="time"
+                  onChange={(_event, selectedDate) => {
+                    if (selectedDate) {
+                      setNewFeedEventTime(selectedDate)
+                    }
+                  }}
+                  style={styles.eventTimePicker}
+                  value={newFeedEventTime}
+                />
+              </View>
+            ) : null}
             <View style={styles.field}>
               <TextInput
                 autoCapitalize="sentences"
@@ -3661,6 +3716,19 @@ function createStyles(
       minHeight: 92,
       paddingTop: 13,
       textAlignVertical: 'top',
+    },
+    eventDatePicker: {
+      alignSelf: 'stretch',
+    },
+    eventTimeRow: {
+      minHeight: 44,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 12,
+    },
+    eventTimePicker: {
+      minWidth: 120,
     },
     reminderToggle: {
       minHeight: 44,

@@ -85,6 +85,7 @@ const manualFeedItemSchema = z.object({
   text: z.string().trim().min(1).max(220),
   startsAt: z.string().trim().min(1).max(120),
   endsAt: z.string().trim().min(1).max(120).nullable().optional(),
+  allDay: z.boolean().optional(),
   remindOneWeekBefore: z.boolean().optional()
 });
 
