@@ -2464,7 +2464,7 @@ export default function HomeScreen() {
 
                     {error ? <Text style={styles.chatError}>{error}</Text> : null}
 
-                    <KeyboardStickyView offset={{ opened: insets.bottom + 6 }} style={styles.composerWrap}>
+                    <KeyboardStickyView offset={{ opened: Math.max(insets.bottom, 16) + 12 }} style={styles.composerWrap}>
                       {renderComposer()}
                     </KeyboardStickyView>
                   </>
@@ -3209,7 +3209,7 @@ function createStyles(
     messagesContent: {
       paddingTop: 64,
       paddingHorizontal: 20,
-      paddingBottom: 130,
+      paddingBottom: Math.max(bottomInset, 18) + 142,
       gap: 24,
     },
     messageRow: {
@@ -3882,7 +3882,7 @@ function createStyles(
       position: 'absolute',
       left: 16,
       right: 16,
-      bottom: 12,
+      bottom: Math.max(bottomInset, 16) + 8,
       zIndex: 4,
       flexDirection: 'row',
       alignItems: 'flex-end',

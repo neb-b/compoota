@@ -125,7 +125,6 @@ export function openDatabase(databasePath: string): Database.Database {
     );
 
     CREATE INDEX IF NOT EXISTS idx_pairing_codes_code_hash ON pairing_codes(code_hash);
-    CREATE INDEX IF NOT EXISTS idx_devices_household_id ON devices(household_id);
     CREATE INDEX IF NOT EXISTS idx_devices_token_hash ON devices(token_hash);
     CREATE INDEX IF NOT EXISTS idx_audit_log_device_id ON audit_log(device_id);
     CREATE INDEX IF NOT EXISTS idx_media_device_id ON media(device_id);
@@ -257,6 +256,7 @@ export function openDatabase(databasePath: string): Database.Database {
     db.prepare("ALTER TABLE devices ADD COLUMN household_id TEXT").run();
   }
   db.prepare("UPDATE devices SET household_id = ? WHERE household_id IS NULL").run(defaultHouseholdId);
+  db.prepare("CREATE INDEX IF NOT EXISTS idx_devices_household_id ON devices(household_id)").run();
 
   const mediaColumns = new Set(
     db.prepare("PRAGMA table_info(media)").all().map((column) => (column as { name: string }).name)
