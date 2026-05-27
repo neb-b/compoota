@@ -59,7 +59,7 @@ export function setupPageHtml(publicBaseUrl: string | null): string {
       <section>
         <div class="row">
           <button id="create">Create pairing code</button>
-          <button class="secondary" id="refresh">Refresh devices</button>
+          <button class="secondary" id="refresh">Refresh status</button>
         </div>
         <p id="pairing" class="muted"></p>
         <p id="error" class="error"></p>
@@ -69,12 +69,17 @@ export function setupPageHtml(publicBaseUrl: string | null): string {
         <h2>Devices</h2>
         <div id="devices" class="muted">No devices loaded.</div>
       </section>
+      <section>
+        <h2>Household status</h2>
+        <div id="status" class="muted">No status loaded.</div>
+      </section>
     </main>
     <script>
       const secret = document.getElementById("secret");
       const pairing = document.getElementById("pairing");
       const error = document.getElementById("error");
       const devices = document.getElementById("devices");
+      const status = document.getElementById("status");
 
       function headers() {
         return { "Authorization": "Bearer " + secret.value, "Content-Type": "application/json" };
@@ -113,6 +118,7 @@ export function setupPageHtml(publicBaseUrl: string | null): string {
           const data = await request("/devices");
           if (!data.length) {
             devices.textContent = "No devices registered yet.";
+            await loadStatus();
             return;
           }
           devices.innerHTML = "";
@@ -130,6 +136,29 @@ export function setupPageHtml(publicBaseUrl: string | null): string {
               row.appendChild(button);
             }
             devices.appendChild(row);
+          }
+          await loadStatus();
+        } catch (err) {
+          error.textContent = err.message;
+        }
+      }
+
+      async function loadStatus() {
+        try {
+          const data = await request("/setup/feed/status");
+          const pendingReminders = (data.reminders || []).filter((item) => item.status === "pending").length;
+          const failedDeliveries = (data.deliveries || []).filter((item) => item.status === "failed" || item.error_message).length;
+          status.innerHTML = "";
+          const lines = [
+            "Events shown: " + (data.items || []).length,
+            "Recent refresh runs: " + (data.runs || []).length,
+            "Pending reminders: " + pendingReminders,
+            "Recent delivery failures: " + failedDeliveries
+          ];
+          for (const line of lines) {
+            const div = document.createElement("div");
+            div.textContent = line;
+            status.appendChild(div);
           }
         } catch (err) {
           error.textContent = err.message;

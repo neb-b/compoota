@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type { Config } from "./config.js";
 import type { DeviceRow } from "./db.js";
 import { hashSecret, safeEqual } from "./crypto.js";
+import { getDefaultHouseholdId } from "./db.js";
 
 export class AuthError extends Error {
   statusCode = 401;
@@ -60,6 +61,12 @@ export function verifyDeviceToken(
 
   if (!device || device.revoked_at) {
     throw new AuthError();
+  }
+
+  if (!device.household_id) {
+    const householdId = getDefaultHouseholdId(db);
+    db.prepare("UPDATE devices SET household_id = ? WHERE id = ?").run(householdId, device.id);
+    device.household_id = householdId;
   }
 
   return device;

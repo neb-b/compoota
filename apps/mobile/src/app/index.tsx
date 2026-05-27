@@ -1,7 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import Constants from 'expo-constants'
 import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect'
 import * as ImagePicker from 'expo-image-picker'
 import { LinearGradient } from 'expo-linear-gradient'
+import * as Notifications from 'expo-notifications'
 import { SymbolView, type SFSymbol } from 'expo-symbols'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -12,6 +14,7 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Linking,
+  LayoutAnimation,
   Modal,
   Platform,
   Pressable,
@@ -67,7 +70,7 @@ type MessageMedia = {
   height?: number
 }
 
-type ActiveScreen = 'home' | 'assistant' | 'media'
+type ActiveScreen = 'home' | 'assistant' | 'maintenance' | 'media'
 
 type AppleIconProps = {
   color: string
@@ -126,6 +129,21 @@ type FeedItem = {
 
 type FeedTab = 'all' | 'saved'
 
+type FeedUndoState = {
+  item: FeedItem
+  previousFeedback: FeedFeedback
+}
+
+type MaintenanceTask = {
+  id: string
+  title: string
+  cadenceDays: number | null
+  nextDueAt: string | null
+  lastCompletedAt: string | null
+  notes: string
+  status: string
+}
+
 type PendingMedia = Omit<MessageMedia, 'remoteUrl'> & {
   uri: string
   base64: string
@@ -177,6 +195,15 @@ const PENDING_ACTIVITY: ActivityStep[] = [
     status: 'running',
   },
 ]
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+})
 
 function canRenderLiquidGlass(): boolean {
   if (Platform.OS !== 'ios') {
@@ -562,6 +589,10 @@ function isPersonalFeedItem(item: FeedItem): boolean {
   return item.category === 'personal' || item.sourceUrl.startsWith('compoota://personal-event/')
 }
 
+function isSavedFeedItem(item: FeedItem): boolean {
+  return item.feedback === 'save' || isPersonalFeedItem(item)
+}
+
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -571,6 +602,65 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
   } finally {
     clearTimeout(timeout)
   }
+}
+
+async function registerForPushToken(): Promise<string | null> {
+  if (Platform.OS === 'web') {
+    return null
+  }
+
+  try {
+    const existing = await Notifications.getPermissionsAsync()
+    const permission = existing.granted ? existing : await Notifications.requestPermissionsAsync()
+    if (!permission.granted) {
+      return null
+    }
+
+    const projectId =
+      Constants.expoConfig?.extra?.eas?.projectId ??
+      Constants.easConfig?.projectId
+    const token = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)
+    return token.data
+  } catch {
+    return null
+  }
+}
+
+function parseMaintenanceTasks(value: unknown): MaintenanceTask[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const task = item as Record<string, unknown>
+      return {
+        id: typeof task.id === 'string' ? task.id : '',
+        title: typeof task.title === 'string' ? task.title : '',
+        cadenceDays: typeof task.cadenceDays === 'number' ? task.cadenceDays : null,
+        nextDueAt: typeof task.nextDueAt === 'string' ? task.nextDueAt : null,
+        lastCompletedAt: typeof task.lastCompletedAt === 'string' ? task.lastCompletedAt : null,
+        notes: typeof task.notes === 'string' ? task.notes : '',
+        status: typeof task.status === 'string' ? task.status : 'active',
+      }
+    })
+    .filter((task) => task.id && task.title)
+}
+
+function formatMaintenanceDate(value: string | null): string {
+  if (!value) {
+    return 'No due date'
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(date)
 }
 
 function streamCommandRequest({
@@ -699,6 +789,7 @@ export default function HomeScreen() {
   const colors = useMemo(() => createColors(isDark), [isDark])
   const scrollRef = useRef<ScrollView>(null)
   const scrollToEndTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([])
+  const feedUndoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sidebarOpenDistance = Math.min(screenWidth * 0.76, 340)
 
   const [connection, setConnection] = useState<Connection | null>(null)
@@ -713,6 +804,7 @@ export default function HomeScreen() {
   const [feedTab, setFeedTab] = useState<FeedTab>('all')
   const [feedPreferences, setFeedPreferences] = useState<FeedPreferences | null>(null)
   const [feedRun, setFeedRun] = useState<FeedRun | null>(null)
+  const [feedUndo, setFeedUndo] = useState<FeedUndoState | null>(null)
   const [feedLoading, setFeedLoading] = useState(false)
   const [feedRefreshing, setFeedRefreshing] = useState(false)
   const [feedError, setFeedError] = useState('')
@@ -720,12 +812,17 @@ export default function HomeScreen() {
   const [newFeedEventVisible, setNewFeedEventVisible] = useState(false)
   const [newFeedEventDate, setNewFeedEventDate] = useState('')
   const [newFeedEventText, setNewFeedEventText] = useState('')
+  const [newFeedEventRemind, setNewFeedEventRemind] = useState(false)
   const [newFeedEventSaving, setNewFeedEventSaving] = useState(false)
   const [feedLocationDraft, setFeedLocationDraft] = useState('Saline, MI')
   const [feedRadiusDraft, setFeedRadiusDraft] = useState('30')
   const [mediaLibrary, setMediaLibrary] = useState<MessageMedia[]>([])
   const [mediaLibraryLoading, setMediaLibraryLoading] = useState(false)
   const [mediaLibraryError, setMediaLibraryError] = useState('')
+  const [maintenanceTasks, setMaintenanceTasks] = useState<MaintenanceTask[]>([])
+  const [maintenanceLoading, setMaintenanceLoading] = useState(false)
+  const [maintenanceError, setMaintenanceError] = useState('')
+  const [completingMaintenanceId, setCompletingMaintenanceId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -829,7 +926,7 @@ export default function HomeScreen() {
 
   const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId)
   const visibleFeedItems = useMemo(
-    () => (feedTab === 'saved' ? feedItems.filter(isPersonalFeedItem) : feedItems),
+    () => (feedTab === 'saved' ? feedItems.filter(isSavedFeedItem) : feedItems),
     [feedItems, feedTab],
   )
   useEffect(() => {
@@ -958,47 +1055,111 @@ export default function HomeScreen() {
     }
   }, [connection, feedRefreshing])
 
-  const sendFeedFeedback = useCallback(
+  const persistFeedFeedback = useCallback(
     async (item: FeedItem, value: 'like' | 'dislike' | 'hide' | 'save' | 'clear') => {
       if (!connection) {
-        return
+        return null
       }
 
+      const response = await fetchWithTimeout(
+        `${connection.serverUrl}/feed/items/${item.id}/feedback`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${connection.deviceToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ value }),
+        },
+        12000,
+      )
+      if (!response.ok) {
+        throw new Error(await readError(response))
+      }
+
+      const data = (await response.json()) as { item?: unknown }
+      const [updated] = parseFeedItems(data.item ? [data.item] : [])
+      return updated ?? null
+    },
+    [connection],
+  )
+
+  const sendFeedFeedback = useCallback(
+    async (item: FeedItem, value: 'save' | 'clear') => {
       setFeedError('')
       try {
-        const response = await fetchWithTimeout(
-          `${connection.serverUrl}/feed/items/${item.id}/feedback`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${connection.deviceToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ value }),
-          },
-          12000,
-        )
-        if (!response.ok) {
-          throw new Error(await readError(response))
-        }
-
-        if (value === 'hide') {
-          setFeedItems((current) => current.filter((candidate) => candidate.id !== item.id))
-        } else {
-          const data = (await response.json()) as { item?: unknown }
-          const [updated] = parseFeedItems(data.item ? [data.item] : [])
-          if (updated) {
-            setFeedItems((current) =>
-              current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
-            )
-          }
+        const updated = await persistFeedFeedback(item, value)
+        if (updated) {
+          setFeedItems((current) =>
+            current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+          )
         }
       } catch (err) {
         setFeedError(err instanceof Error ? err.message : 'Feedback could not be saved.')
       }
     },
-    [connection],
+    [persistFeedFeedback],
   )
+
+  const dismissFeedItem = useCallback(
+    async (item: FeedItem) => {
+      setFeedError('')
+      if (feedUndoTimerRef.current) {
+        clearTimeout(feedUndoTimerRef.current)
+      }
+
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut)
+      setFeedItems((current) => current.filter((candidate) => candidate.id !== item.id))
+      setFeedUndo({ item, previousFeedback: item.feedback })
+      feedUndoTimerRef.current = setTimeout(() => {
+        setFeedUndo(null)
+        feedUndoTimerRef.current = null
+      }, 6000)
+
+      try {
+        await persistFeedFeedback(item, 'dislike')
+      } catch (err) {
+        if (feedUndoTimerRef.current) {
+          clearTimeout(feedUndoTimerRef.current)
+          feedUndoTimerRef.current = null
+        }
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut)
+        setFeedItems((current) =>
+          [...current, item].sort(
+            (left, right) => new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime(),
+          ),
+        )
+        setFeedUndo(null)
+        setFeedError(err instanceof Error ? err.message : 'Feedback could not be saved.')
+      }
+    },
+    [persistFeedFeedback],
+  )
+
+  const undoDismissedFeedItem = useCallback(async () => {
+    if (!feedUndo) {
+      return
+    }
+    const { item, previousFeedback } = feedUndo
+    if (feedUndoTimerRef.current) {
+      clearTimeout(feedUndoTimerRef.current)
+      feedUndoTimerRef.current = null
+    }
+
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut)
+    setFeedItems((current) =>
+      [...current, item].sort(
+        (left, right) => new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime(),
+      ),
+    )
+    setFeedUndo(null)
+
+    try {
+      await persistFeedFeedback(item, previousFeedback ?? 'clear')
+    } catch (err) {
+      setFeedError(err instanceof Error ? err.message : 'Undo could not be saved.')
+    }
+  }, [feedUndo, persistFeedFeedback])
 
   const openFeedSettings = () => {
     setFeedLocationDraft(feedPreferences?.homeLocation ?? 'Saline, MI')
@@ -1018,6 +1179,7 @@ export default function HomeScreen() {
       }).format(tomorrow),
     )
     setNewFeedEventText('')
+    setNewFeedEventRemind(false)
     setNewFeedEventVisible(true)
   }
 
@@ -1040,6 +1202,7 @@ export default function HomeScreen() {
           body: JSON.stringify({
             startsAt: newFeedEventDate,
             text: newFeedEventText,
+            remindOneWeekBefore: newFeedEventRemind,
           }),
         },
         12000,
@@ -1068,7 +1231,7 @@ export default function HomeScreen() {
     } finally {
       setNewFeedEventSaving(false)
     }
-  }, [connection, newFeedEventDate, newFeedEventSaving, newFeedEventText])
+  }, [connection, newFeedEventDate, newFeedEventRemind, newFeedEventSaving, newFeedEventText])
 
   const saveFeedSettings = useCallback(async () => {
     if (!connection) {
@@ -1142,6 +1305,98 @@ export default function HomeScreen() {
       setMediaLibraryError(err instanceof Error ? err.message : 'Media could not be loaded.')
     } finally {
       setMediaLibraryLoading(false)
+    }
+  }, [connection])
+
+  const loadMaintenance = useCallback(async () => {
+    if (!connection) {
+      return
+    }
+
+    setMaintenanceLoading(true)
+    setMaintenanceError('')
+    try {
+      const response = await fetchWithTimeout(
+        `${connection.serverUrl}/maintenance`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${connection.deviceToken}`,
+          },
+        },
+        12000,
+      )
+      if (!response.ok) {
+        throw new Error(await readError(response))
+      }
+
+      const data = (await response.json()) as { tasks?: unknown }
+      setMaintenanceTasks(parseMaintenanceTasks(data.tasks))
+    } catch (err) {
+      setMaintenanceError(err instanceof Error ? err.message : 'Maintenance could not be loaded.')
+    } finally {
+      setMaintenanceLoading(false)
+    }
+  }, [connection])
+
+  const completeMaintenance = useCallback(
+    async (task: MaintenanceTask) => {
+      if (!connection || completingMaintenanceId) {
+        return
+      }
+
+      setCompletingMaintenanceId(task.id)
+      setMaintenanceError('')
+      try {
+        const response = await fetchWithTimeout(
+          `${connection.serverUrl}/maintenance/${task.id}/complete`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${connection.deviceToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({}),
+          },
+          12000,
+        )
+        if (!response.ok) {
+          throw new Error(await readError(response))
+        }
+        const data = (await response.json()) as { tasks?: unknown }
+        setMaintenanceTasks(parseMaintenanceTasks(data.tasks))
+      } catch (err) {
+        setMaintenanceError(err instanceof Error ? err.message : 'Maintenance could not be updated.')
+      } finally {
+        setCompletingMaintenanceId(null)
+      }
+    },
+    [completingMaintenanceId, connection],
+  )
+
+  const updatePushToken = useCallback(async () => {
+    if (!connection) {
+      return
+    }
+    const expoPushToken = await registerForPushToken()
+    if (!expoPushToken) {
+      return
+    }
+    try {
+      await fetchWithTimeout(
+        `${connection.serverUrl}/devices/me/push-token`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${connection.deviceToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ expoPushToken }),
+        },
+        12000,
+      )
+    } catch {
+      // Push registration should not block the rest of the app.
     }
   }, [connection])
 
@@ -1344,6 +1599,10 @@ export default function HomeScreen() {
         clearTimeout(timer)
       }
       scrollToEndTimersRef.current = []
+      if (feedUndoTimerRef.current) {
+        clearTimeout(feedUndoTimerRef.current)
+        feedUndoTimerRef.current = null
+      }
     },
     [],
   )
@@ -1434,6 +1693,16 @@ export default function HomeScreen() {
     }
   }, [activeScreen, loadMediaLibrary])
 
+  useEffect(() => {
+    if (activeScreen === 'maintenance') {
+      loadMaintenance()
+    }
+  }, [activeScreen, loadMaintenance])
+
+  useEffect(() => {
+    updatePushToken()
+  }, [updatePushToken])
+
   async function connect() {
     setError('')
     setBusy(true)
@@ -1454,6 +1723,7 @@ export default function HomeScreen() {
         throw new Error(`Server health check failed with status ${health.status}.`)
       }
 
+      const expoPushToken = await registerForPushToken()
       const response = await fetchWithTimeout(
         `${normalizedUrl}/pair`,
         {
@@ -1462,6 +1732,7 @@ export default function HomeScreen() {
           body: JSON.stringify({
             pairingCode: cleanedCode,
             deviceName: cleanedName,
+            expoPushToken,
           }),
         },
         12000,
@@ -1495,6 +1766,7 @@ export default function HomeScreen() {
       setFeedPreferences(null)
       setFeedRun(null)
       setMediaLibrary([])
+      setMaintenanceTasks([])
       setActiveScreen('home')
     } catch (err) {
       const message =
@@ -1581,6 +1853,7 @@ export default function HomeScreen() {
             activity: activity ?? message.activity,
             isStreaming: false,
           }))
+          loadMaintenance().catch(() => undefined)
         },
       })
 
@@ -1854,6 +2127,24 @@ export default function HomeScreen() {
                     Media
                   </Text>
                 </Pressable>
+                <Pressable
+                  accessibilityLabel="Open maintenance"
+                  onPress={() => showScreen('maintenance')}
+                  style={({ pressed }) => [
+                    styles.sidebarNavItem,
+                    activeScreen === 'maintenance' && styles.sidebarNavItemActive,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.sidebarNavText,
+                      activeScreen === 'maintenance' && styles.sidebarNavTextActive,
+                    ]}
+                  >
+                    Maintenance
+                  </Text>
+                </Pressable>
               </View>
             </View>
 
@@ -2025,32 +2316,43 @@ export default function HomeScreen() {
                             <View style={styles.feedActions}>
                               <Pressable
                                 accessibilityLabel="Like feed item"
-                                onPress={() => sendFeedFeedback(item, item.feedback === 'like' ? 'clear' : 'like')}
+                                onPress={(event) => {
+                                  event.stopPropagation()
+                                  sendFeedFeedback(
+                                    item,
+                                    item.feedback === 'save' || item.feedback === 'like' ? 'clear' : 'save',
+                                  )
+                                }}
                                 style={({ pressed }) => [
                                   styles.feedActionButton,
-                                  item.feedback === 'like' && styles.feedActionButtonActive,
+                                  (item.feedback === 'save' || item.feedback === 'like') &&
+                                    styles.feedActionButtonActive,
                                   pressed && styles.pressed,
                                 ]}
                               >
                                 <AppleIcon
-                                  color={item.feedback === 'like' ? colors.actionText : colors.text}
+                                  color={
+                                    item.feedback === 'save' || item.feedback === 'like'
+                                      ? colors.actionText
+                                      : colors.text
+                                  }
                                   name="hand.thumbsup"
                                   size={18}
                                 />
                               </Pressable>
                               <Pressable
                                 accessibilityLabel="Dislike feed item"
-                                onPress={() =>
-                                  sendFeedFeedback(item, item.feedback === 'dislike' ? 'clear' : 'dislike')
-                                }
+                                onPress={(event) => {
+                                  event.stopPropagation()
+                                  dismissFeedItem(item)
+                                }}
                                 style={({ pressed }) => [
                                   styles.feedActionButton,
-                                  item.feedback === 'dislike' && styles.feedActionButtonActive,
                                   pressed && styles.pressed,
                                 ]}
                               >
                                 <AppleIcon
-                                  color={item.feedback === 'dislike' ? colors.actionText : colors.text}
+                                  color={colors.text}
                                   name="hand.thumbsdown"
                                   size={18}
                                 />
@@ -2142,6 +2444,63 @@ export default function HomeScreen() {
                       {renderComposer()}
                     </KeyboardStickyView>
                   </>
+                ) : activeScreen === 'maintenance' ? (
+                  <ScrollView
+                    contentContainerStyle={styles.mediaContent}
+                    keyboardShouldPersistTaps="handled"
+                    refreshControl={
+                      <RefreshControl
+                        refreshing={maintenanceLoading}
+                        onRefresh={loadMaintenance}
+                        tintColor={colors.text}
+                      />
+                    }
+                    style={styles.messages}
+                  >
+                    <View style={styles.mediaHeader}>
+                      <Text style={styles.mediaTitle}>Maintenance</Text>
+                      <Text style={styles.mediaSubtitle}>
+                        {maintenanceTasks.length} active {maintenanceTasks.length === 1 ? 'task' : 'tasks'}
+                      </Text>
+                    </View>
+                    {maintenanceLoading ? (
+                      <ActivityIndicator color={colors.text} style={styles.mediaLoader} />
+                    ) : maintenanceError ? (
+                      <Text style={styles.mediaEmptyText}>{maintenanceError}</Text>
+                    ) : maintenanceTasks.length ? (
+                      <View style={styles.maintenanceList}>
+                        {maintenanceTasks.map((task) => (
+                          <View key={task.id} style={styles.maintenanceItem}>
+                            <View style={styles.maintenanceItemText}>
+                              <Text style={styles.maintenanceTitle}>{task.title}</Text>
+                              <Text style={styles.maintenanceMeta}>
+                                Due {formatMaintenanceDate(task.nextDueAt)}
+                                {task.cadenceDays ? ` · every ${task.cadenceDays} days` : ''}
+                              </Text>
+                              {task.lastCompletedAt ? (
+                                <Text style={styles.maintenanceMeta}>
+                                  Last done {formatMaintenanceDate(task.lastCompletedAt)}
+                                </Text>
+                              ) : null}
+                            </View>
+                            <Pressable
+                              accessibilityLabel={`Mark ${task.title} done`}
+                              disabled={completingMaintenanceId === task.id}
+                              onPress={() => completeMaintenance(task)}
+                              style={({ pressed }) => [
+                                styles.maintenanceDoneButton,
+                                (pressed || completingMaintenanceId === task.id) && styles.pressed,
+                              ]}
+                            >
+                              <Text style={styles.maintenanceDoneText}>Done</Text>
+                            </Pressable>
+                          </View>
+                        ))}
+                      </View>
+                    ) : (
+                      <Text style={styles.mediaEmptyText}>Ask compoota to add maintenance tasks.</Text>
+                    )}
+                  </ScrollView>
                 ) : (
                   <ScrollView
                     contentContainerStyle={styles.mediaContent}
@@ -2198,6 +2557,22 @@ export default function HomeScreen() {
           </Animated.View>
         </GestureDetector>
       </View>
+      {feedUndo ? (
+        <View pointerEvents="box-none" style={styles.feedUndoToastWrap}>
+          <View style={styles.feedUndoToast}>
+            <Text numberOfLines={1} style={styles.feedUndoText}>
+              Removed from the household feed
+            </Text>
+            <Pressable
+              accessibilityLabel="Undo removed feed item"
+              onPress={undoDismissedFeedItem}
+              style={({ pressed }) => [styles.feedUndoButton, pressed && styles.pressed]}
+            >
+              <Text style={styles.feedUndoButtonText}>Undo</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
       <Modal
         animationType="fade"
         onRequestClose={() => setMediaSheetVisible(false)}
@@ -2308,6 +2683,16 @@ export default function HomeScreen() {
                 value={newFeedEventText}
               />
             </View>
+            <Pressable
+              accessibilityLabel="Remind one week before"
+              onPress={() => setNewFeedEventRemind((current) => !current)}
+              style={({ pressed }) => [styles.reminderToggle, pressed && styles.pressed]}
+            >
+              <View style={[styles.reminderCheckbox, newFeedEventRemind && styles.reminderCheckboxActive]}>
+                {newFeedEventRemind ? <AppleIcon color={colors.actionText} name="checkmark" size={15} /> : null}
+              </View>
+              <Text style={styles.reminderToggleText}>Remind everyone 1 week before</Text>
+            </Pressable>
             <View style={styles.feedSettingsActions}>
               <Pressable
                 onPress={() => setNewFeedEventVisible(false)}
@@ -2971,6 +3356,53 @@ function createStyles(
       textAlign: 'center',
       marginTop: 8,
     },
+    feedUndoToastWrap: {
+      position: 'absolute',
+      left: 16,
+      right: 16,
+      bottom: Math.max(bottomInset, 14) + 14,
+      zIndex: 20,
+      alignItems: 'center',
+    },
+    feedUndoToast: {
+      maxWidth: 560,
+      width: '100%',
+      minHeight: 52,
+      borderRadius: 16,
+      paddingVertical: 10,
+      paddingLeft: 16,
+      paddingRight: 10,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      backgroundColor: isDark ? '#252525' : '#ffffff',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      shadowColor,
+      shadowOpacity: 0.18,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 8 },
+    },
+    feedUndoText: {
+      flex: 1,
+      color: colors.text,
+      fontSize: 14,
+      lineHeight: 19,
+      fontWeight: '400',
+    },
+    feedUndoButton: {
+      minWidth: 70,
+      height: 34,
+      borderRadius: 17,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.action,
+    },
+    feedUndoButtonText: {
+      color: colors.actionText,
+      fontSize: 14,
+      fontWeight: '800',
+    },
     mediaContent: {
       paddingTop: 86,
       paddingHorizontal: 18,
@@ -3023,6 +3455,51 @@ function createStyles(
     mediaLibraryImage: {
       width: '100%',
       height: '100%',
+    },
+    maintenanceList: {
+      maxWidth: 560,
+      width: '100%',
+      alignSelf: 'center',
+      gap: 10,
+    },
+    maintenanceItem: {
+      borderRadius: 16,
+      padding: 14,
+      gap: 12,
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.045)',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    maintenanceItemText: {
+      flex: 1,
+      gap: 4,
+      minWidth: 0,
+    },
+    maintenanceTitle: {
+      color: colors.text,
+      fontSize: 17,
+      lineHeight: 22,
+      fontWeight: '800',
+    },
+    maintenanceMeta: {
+      color: colors.secondaryText,
+      fontSize: 14,
+      lineHeight: 19,
+    },
+    maintenanceDoneButton: {
+      height: 38,
+      paddingHorizontal: 14,
+      borderRadius: 19,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.action,
+    },
+    maintenanceDoneText: {
+      color: colors.actionText,
+      fontSize: 14,
+      fontWeight: '800',
     },
     expandedMediaRoot: {
       flex: 1,
@@ -3184,6 +3661,33 @@ function createStyles(
       minHeight: 92,
       paddingTop: 13,
       textAlignVertical: 'top',
+    },
+    reminderToggle: {
+      minHeight: 44,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+    },
+    reminderCheckbox: {
+      width: 24,
+      height: 24,
+      borderRadius: 7,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+    },
+    reminderCheckboxActive: {
+      backgroundColor: colors.action,
+      borderColor: colors.action,
+    },
+    reminderToggleText: {
+      color: colors.text,
+      fontSize: 15,
+      lineHeight: 20,
+      fontWeight: '700',
+      flexShrink: 1,
     },
     mediaSheetAction: {
       height: 50,

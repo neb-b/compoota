@@ -2,14 +2,15 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { Config } from "./config.js";
-import type { DeviceRow, FeedItemRow } from "./db.js";
+import type { FeedItemRow, HouseholdRow } from "./db.js";
+import { getDefaultHouseholdId } from "./db.js";
 import { runHermesCommand } from "./hermes.js";
 
 type FeedFeedbackValue = "like" | "dislike" | "hide" | "save";
 export type FeedFeedbackInput = FeedFeedbackValue | "clear";
 
 type FeedPreferencesRow = {
-  device_id: string;
+  household_id: string;
   home_location: string;
   radius_miles: number;
   liked_signals_json: string;
@@ -21,7 +22,7 @@ type FeedPreferencesRow = {
 
 type FeedRefreshRunRow = {
   id: string;
-  device_id: string;
+  household_id: string;
   status: string;
   started_at: string;
   finished_at: string | null;
@@ -44,6 +45,7 @@ export type FeedItemResponse = {
   category: string;
   startsAt: string;
   endsAt: string | null;
+  allDay: boolean;
   venue: string;
   area: string;
   sourceUrl: string;
@@ -70,8 +72,8 @@ export type FeedRefreshResponse = {
 };
 
 export type FeedRefreshAllResult = {
-  deviceId: string;
-  deviceName: string;
+  householdId: string;
+  householdName: string;
   result: FeedRefreshResponse;
 };
 
@@ -84,6 +86,8 @@ export type ManualFeedItemInput = {
   text: string;
   startsAt: string;
   endsAt?: string | null;
+  allDay?: boolean;
+  remindOneWeekBefore?: boolean;
 };
 
 const hermesFeedItemSchema = z.object({
@@ -171,33 +175,33 @@ function preferencesResponse(row: FeedPreferencesRow): FeedPreferencesResponse {
 export function getOrCreateFeedPreferences(
   db: Database.Database,
   config: Config,
-  deviceId: string
+  householdId: string
 ): FeedPreferencesResponse {
   const existing = db
-    .prepare("SELECT * FROM feed_preferences WHERE device_id = ?")
-    .get(deviceId) as FeedPreferencesRow | undefined;
+    .prepare("SELECT * FROM event_preferences WHERE household_id = ?")
+    .get(householdId) as FeedPreferencesRow | undefined;
   if (existing) {
     return preferencesResponse(existing);
   }
 
   const createdAt = nowIso();
   db.prepare(
-    "INSERT INTO feed_preferences (device_id, home_location, radius_miles, liked_signals_json, disliked_signals_json, hidden_categories_json, created_at, updated_at) VALUES (?, ?, ?, '[]', '[]', '[]', ?, ?)"
-  ).run(deviceId, config.feedDefaultLocation, config.feedDefaultRadiusMiles, createdAt, createdAt);
+    "INSERT INTO event_preferences (household_id, home_location, radius_miles, liked_signals_json, disliked_signals_json, hidden_categories_json, created_at, updated_at) VALUES (?, ?, ?, '[]', '[]', '[]', ?, ?)"
+  ).run(householdId, config.feedDefaultLocation, config.feedDefaultRadiusMiles, createdAt, createdAt);
 
   const row = db
-    .prepare("SELECT * FROM feed_preferences WHERE device_id = ?")
-    .get(deviceId) as FeedPreferencesRow;
+    .prepare("SELECT * FROM event_preferences WHERE household_id = ?")
+    .get(householdId) as FeedPreferencesRow;
   return preferencesResponse(row);
 }
 
 export function updateFeedPreferences(
   db: Database.Database,
   config: Config,
-  deviceId: string,
+  householdId: string,
   input: Partial<FeedPreferencesResponse>
 ): FeedPreferencesResponse {
-  const current = getOrCreateFeedPreferences(db, config, deviceId);
+  const current = getOrCreateFeedPreferences(db, config, householdId);
   const next = {
     homeLocation: input.homeLocation?.trim() || current.homeLocation,
     radiusMiles: Number.isFinite(input.radiusMiles) && input.radiusMiles ? input.radiusMiles : current.radiusMiles,
@@ -208,7 +212,7 @@ export function updateFeedPreferences(
   const updatedAt = nowIso();
 
   db.prepare(
-    "UPDATE feed_preferences SET home_location = ?, radius_miles = ?, liked_signals_json = ?, disliked_signals_json = ?, hidden_categories_json = ?, updated_at = ? WHERE device_id = ?"
+    "UPDATE event_preferences SET home_location = ?, radius_miles = ?, liked_signals_json = ?, disliked_signals_json = ?, hidden_categories_json = ?, updated_at = ? WHERE household_id = ?"
   ).run(
     next.homeLocation,
     next.radiusMiles,
@@ -216,10 +220,10 @@ export function updateFeedPreferences(
     stringifyStringArray(next.dislikedSignals),
     stringifyStringArray(next.hiddenCategories),
     updatedAt,
-    deviceId
+    householdId
   );
 
-  return getOrCreateFeedPreferences(db, config, deviceId);
+  return getOrCreateFeedPreferences(db, config, householdId);
 }
 
 function normalizeUrl(value: string): string {
@@ -236,10 +240,7 @@ function normalizeUrl(value: string): string {
 function dedupeKey(item: HermesFeedItem): string {
   const normalizedUrl = normalizeUrl(item.sourceUrl);
   const titleDate = `${item.title.trim().toLowerCase()}:${item.startsAt.slice(0, 10)}`;
-  if (normalizedUrl) {
-    return `url:${normalizedUrl}:${titleDate}`;
-  }
-  return `fallback:${titleDate}`;
+  return normalizedUrl ? `url:${normalizedUrl}:${titleDate}` : `fallback:${titleDate}`;
 }
 
 function extractJsonObject(value: string): unknown {
@@ -313,21 +314,21 @@ export function seedSampleFeedForAllDevices(
   db: Database.Database,
   config: Config
 ): FeedRefreshAllResult[] {
-  const devices = db.prepare("SELECT * FROM devices WHERE revoked_at IS NULL").all() as DeviceRow[];
-  return devices.map((device) => {
+  const households = db.prepare("SELECT * FROM households ORDER BY created_at ASC").all() as HouseholdRow[];
+  return households.map((household) => {
     const runId = randomUUID();
     const startedAt = nowIso();
     const items = mockFeedItems();
     db.prepare(
-      "INSERT INTO feed_refresh_runs (id, device_id, status, started_at, finished_at, item_count) VALUES (?, ?, 'done', ?, ?, ?)"
-    ).run(runId, device.id, startedAt, startedAt, persistFeedItems(db, config, device.id, items));
-    const run = db.prepare("SELECT * FROM feed_refresh_runs WHERE id = ?").get(runId) as FeedRefreshRunRow;
+      "INSERT INTO event_refresh_runs (id, household_id, status, started_at, finished_at, item_count) VALUES (?, ?, 'done', ?, ?, ?)"
+    ).run(runId, household.id, startedAt, startedAt, persistFeedItems(db, config, household.id, items));
+    const run = db.prepare("SELECT * FROM event_refresh_runs WHERE id = ?").get(runId) as FeedRefreshRunRow;
     return {
-      deviceId: device.id,
-      deviceName: device.name,
+      householdId: household.id,
+      householdName: household.name,
       result: {
         run: runResponse(run),
-        items: listFeedItems(db, device.id)
+        items: listFeedItems(db, household.id)
       }
     };
   });
@@ -335,24 +336,24 @@ export function seedSampleFeedForAllDevices(
 
 export function clearRunningFeedRuns(db: Database.Database): number {
   const result = db
-    .prepare("UPDATE feed_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE status = 'running'")
+    .prepare("UPDATE event_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE status = 'running'")
     .run(nowIso(), "Manually cleared stale running feed refresh.");
   return result.changes;
 }
 
-function feedbackSummary(db: Database.Database, deviceId: string): string {
+function feedbackSummary(db: Database.Database, householdId: string): string {
   const rows = db
     .prepare(
-      "SELECT fi.title, fi.category, ff.value FROM feed_feedback ff JOIN feed_items fi ON fi.id = ff.item_id WHERE ff.device_id = ? ORDER BY ff.updated_at DESC LIMIT 20"
+      "SELECT e.title, e.category, ef.value FROM event_feedback ef JOIN events e ON e.id = ef.event_id WHERE ef.household_id = ? ORDER BY ef.updated_at DESC LIMIT 20"
     )
-    .all(deviceId) as Array<{ title: string; category: string; value: string }>;
+    .all(householdId) as Array<{ title: string; category: string; value: string }>;
   if (rows.length === 0) {
     return "No prior feedback yet.";
   }
   return rows.map((row) => `- ${row.value}: ${row.title} (${row.category})`).join("\n");
 }
 
-function buildFeedPrompt(preferences: FeedPreferencesResponse, config: Config, db: Database.Database, deviceId: string): string {
+function buildFeedPrompt(preferences: FeedPreferencesResponse, config: Config, db: Database.Database, householdId: string): string {
   const maxItems = Math.min(config.feedMaxItems, 20);
   const today = new Date().toISOString();
   const horizon = new Date(Date.now() + config.feedLookaheadDays * 24 * 60 * 60 * 1000).toISOString();
@@ -371,8 +372,8 @@ function buildFeedPrompt(preferences: FeedPreferencesResponse, config: Config, d
     "Include events, music, restaurants, markets, classes, outdoor activities, pop-ups, community happenings, and worthwhile local options.",
     "JSON shape: {\"items\":[{\"title\":\"...\",\"summary\":\"...\",\"category\":\"...\",\"startsAt\":\"2026-05-24T19:00:00-04:00\",\"endsAt\":null,\"venue\":\"...\",\"area\":\"...\",\"sourceUrl\":\"https://...\",\"imageUrl\":null,\"priceText\":null,\"reason\":\"...\",\"score\":80,\"distanceMiles\":5}]}",
     "Use full ISO-8601 datetimes for startsAt and endsAt. Include a timezone offset, such as -04:00 for Michigan daylight time. If no exact time is published, use 12:00:00 local time and explain that uncertainty in summary.",
-    "Prior feedback:",
-    feedbackSummary(db, deviceId)
+    "Prior household feedback:",
+    feedbackSummary(db, householdId)
   ].join("\n");
 }
 
@@ -400,6 +401,7 @@ function feedItemResponse(row: FeedItemRow, feedback: FeedFeedbackValue | null):
     category: row.category,
     startsAt: row.starts_at,
     endsAt: row.ends_at,
+    allDay: row.is_all_day === 1,
     venue: row.venue,
     area: row.area,
     sourceUrl: row.source_url,
@@ -414,25 +416,49 @@ function feedItemResponse(row: FeedItemRow, feedback: FeedFeedbackValue | null):
   };
 }
 
-export function listFeedItems(db: Database.Database, deviceId: string): FeedItemResponse[] {
+export function listFeedItems(db: Database.Database, householdId: string): FeedItemResponse[] {
   const rows = db
     .prepare(
-      `SELECT fi.*, ff.value AS feedback
-       FROM feed_items fi
-       LEFT JOIN feed_feedback ff ON ff.device_id = fi.device_id AND ff.item_id = fi.id
-       WHERE fi.device_id = ?
-         AND fi.starts_at >= ?
-         AND COALESCE(ff.value, '') != 'hide'
-       ORDER BY fi.starts_at ASC, fi.created_at DESC`
+      `SELECT e.*, ef.value AS feedback
+       FROM events e
+       LEFT JOIN event_feedback ef ON ef.household_id = e.household_id AND ef.event_id = e.id
+       WHERE e.household_id = ?
+         AND e.starts_at >= ?
+         AND COALESCE(ef.value, '') NOT IN ('hide', 'dislike')
+       ORDER BY e.starts_at ASC, e.created_at DESC`
     )
-    .all(deviceId, nowIso()) as Array<FeedItemRow & { feedback: FeedFeedbackValue | null }>;
+    .all(householdId, nowIso()) as Array<FeedItemRow & { feedback: FeedFeedbackValue | null }>;
 
   return rows.map((row) => feedItemResponse(row, row.feedback ?? null));
 }
 
+function createReminderForEvent(db: Database.Database, householdId: string, item: FeedItemResponse): void {
+  const remindAt = new Date(Date.parse(item.startsAt) - 7 * 24 * 60 * 60 * 1000);
+  if (!Number.isFinite(remindAt.getTime()) || remindAt.getTime() <= Date.now()) {
+    return;
+  }
+
+  const now = nowIso();
+  db.prepare(
+    `INSERT INTO reminders (
+      id, household_id, source_type, source_id, remind_at, title, body, data_json, status, created_at, updated_at
+    ) VALUES (?, ?, 'event', ?, ?, ?, ?, ?, 'pending', ?, ?)`
+  ).run(
+    randomUUID(),
+    householdId,
+    item.id,
+    remindAt.toISOString(),
+    item.title,
+    `Coming up in one week: ${item.title}`,
+    JSON.stringify({ type: "event", id: item.id }),
+    now,
+    now
+  );
+}
+
 export function createManualFeedItem(
   db: Database.Database,
-  deviceId: string,
+  householdId: string,
   input: ManualFeedItemInput
 ): FeedItemResponse {
   const id = randomUUID();
@@ -446,20 +472,35 @@ export function createManualFeedItem(
   }
 
   db.prepare(
-    `INSERT INTO feed_items (
-      id, device_id, dedupe_key, title, summary, category, starts_at, ends_at, venue, area,
+    `INSERT INTO events (
+      id, household_id, dedupe_key, title, summary, category, starts_at, ends_at, is_all_day, venue, area,
       source_url, image_url, price_text, reason, score, distance_miles, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, '', 'personal', ?, ?, '', 'Personal', ?, NULL, NULL, 'Personal event', 100, NULL, ?, ?)`
-  ).run(id, deviceId, `manual:${id}`, text, startsAt, endsAt, `compoota://personal-event/${id}`, now, now);
+    ) VALUES (?, ?, ?, ?, '', 'personal', ?, ?, ?, '', 'Personal', ?, NULL, NULL, 'Personal event', 100, NULL, ?, ?)`
+  ).run(
+    id,
+    householdId,
+    `manual:${id}`,
+    text,
+    startsAt,
+    endsAt,
+    input.allDay ? 1 : 0,
+    `compoota://personal-event/${id}`,
+    now,
+    now
+  );
 
-  const row = db.prepare("SELECT * FROM feed_items WHERE id = ?").get(id) as FeedItemRow;
-  return feedItemResponse(row, null);
+  const row = db.prepare("SELECT * FROM events WHERE id = ?").get(id) as FeedItemRow;
+  const item = feedItemResponse(row, null);
+  if (input.remindOneWeekBefore) {
+    createReminderForEvent(db, householdId, item);
+  }
+  return item;
 }
 
 function persistFeedItems(
   db: Database.Database,
   config: Config,
-  deviceId: string,
+  householdId: string,
   items: HermesFeedItem[]
 ): number {
   const accepted = items
@@ -468,16 +509,17 @@ function persistFeedItems(
   const now = nowIso();
 
   const upsert = db.prepare(
-    `INSERT INTO feed_items (
-      id, device_id, dedupe_key, title, summary, category, starts_at, ends_at, venue, area,
+    `INSERT INTO events (
+      id, household_id, dedupe_key, title, summary, category, starts_at, ends_at, is_all_day, venue, area,
       source_url, image_url, price_text, reason, score, distance_miles, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(device_id, dedupe_key) DO UPDATE SET
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(household_id, dedupe_key) DO UPDATE SET
       title = excluded.title,
       summary = excluded.summary,
       category = excluded.category,
       starts_at = excluded.starts_at,
       ends_at = excluded.ends_at,
+      is_all_day = excluded.is_all_day,
       venue = excluded.venue,
       area = excluded.area,
       source_url = excluded.source_url,
@@ -493,7 +535,7 @@ function persistFeedItems(
     for (const item of accepted) {
       upsert.run(
         randomUUID(),
-        deviceId,
+        householdId,
         dedupeKey(item),
         item.title,
         item.summary,
@@ -532,11 +574,11 @@ function runResponse(row: FeedRefreshRunRow): FeedRefreshResponse["run"] {
 export async function refreshFeedForDevice(
   db: Database.Database,
   config: Config,
-  deviceId: string
+  householdId: string
 ): Promise<FeedRefreshResponse> {
   failStaleFeedRuns(db, config);
   if (schedulerRunning) {
-    const run = latestFeedRun(db, deviceId) ?? runningFeedRuns(db)[0] ?? {
+    const run = latestFeedRun(db, householdId) ?? runningFeedRuns(db)[0] ?? {
       id: "busy",
       status: "running",
       startedAt: nowIso(),
@@ -546,13 +588,13 @@ export async function refreshFeedForDevice(
     };
     return {
       run,
-      items: listFeedItems(db, deviceId)
+      items: listFeedItems(db, householdId)
     };
   }
 
   schedulerRunning = true;
   try {
-    return await refreshFeedForDeviceUnlocked(db, config, deviceId);
+    return await refreshFeedForDeviceUnlocked(db, config, householdId);
   } finally {
     schedulerRunning = false;
   }
@@ -560,36 +602,36 @@ export async function refreshFeedForDevice(
 
 export function setFeedFeedback(
   db: Database.Database,
-  deviceId: string,
+  householdId: string,
   itemId: string,
   value: FeedFeedbackInput
 ): FeedItemResponse | null {
   const item = db
-    .prepare("SELECT * FROM feed_items WHERE id = ? AND device_id = ?")
-    .get(itemId, deviceId) as FeedItemRow | undefined;
+    .prepare("SELECT * FROM events WHERE id = ? AND household_id = ?")
+    .get(itemId, householdId) as FeedItemRow | undefined;
   if (!item) {
     return null;
   }
 
   if (value === "clear") {
-    db.prepare("DELETE FROM feed_feedback WHERE device_id = ? AND item_id = ?").run(deviceId, itemId);
+    db.prepare("DELETE FROM event_feedback WHERE household_id = ? AND event_id = ?").run(householdId, itemId);
     return feedItemResponse(item, null);
   }
 
   const now = nowIso();
   db.prepare(
-    `INSERT INTO feed_feedback (device_id, item_id, value, created_at, updated_at)
+    `INSERT INTO event_feedback (household_id, event_id, value, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(device_id, item_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-  ).run(deviceId, itemId, value, now, now);
+     ON CONFLICT(household_id, event_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).run(householdId, itemId, value, now, now);
 
   return feedItemResponse(item, value);
 }
 
-export function latestFeedRun(db: Database.Database, deviceId: string): FeedRefreshResponse["run"] | null {
+export function latestFeedRun(db: Database.Database, householdId: string): FeedRefreshResponse["run"] | null {
   const run = db
-    .prepare("SELECT * FROM feed_refresh_runs WHERE device_id = ? ORDER BY started_at DESC LIMIT 1")
-    .get(deviceId) as FeedRefreshRunRow | undefined;
+    .prepare("SELECT * FROM event_refresh_runs WHERE household_id = ? ORDER BY started_at DESC LIMIT 1")
+    .get(householdId) as FeedRefreshRunRow | undefined;
   return run ? runResponse(run) : null;
 }
 
@@ -598,7 +640,7 @@ let schedulerTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function runningFeedRuns(db: Database.Database): FeedRefreshResponse["run"][] {
   const rows = db
-    .prepare("SELECT * FROM feed_refresh_runs WHERE status = 'running' ORDER BY started_at DESC")
+    .prepare("SELECT * FROM event_refresh_runs WHERE status = 'running' ORDER BY started_at DESC")
     .all() as FeedRefreshRunRow[];
   return rows.map(runResponse);
 }
@@ -607,7 +649,7 @@ export function failStaleFeedRuns(db: Database.Database, config: Config): number
   const staleBefore = new Date(Date.now() - (config.hermesTimeoutSeconds + 30) * 1000).toISOString();
   const result = db
     .prepare(
-      "UPDATE feed_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE status = 'running' AND started_at < ?"
+      "UPDATE event_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE status = 'running' AND started_at < ?"
     )
     .run(nowIso(), `Feed refresh exceeded ${config.hermesTimeoutSeconds}s and was marked stale.`, staleBefore);
   return result.changes;
@@ -616,39 +658,39 @@ export function failStaleFeedRuns(db: Database.Database, config: Config): number
 async function refreshFeedForDeviceUnlocked(
   db: Database.Database,
   config: Config,
-  deviceId: string
+  householdId: string
 ): Promise<FeedRefreshResponse> {
   const runId = randomUUID();
   const startedAt = nowIso();
   db.prepare(
-    "INSERT INTO feed_refresh_runs (id, device_id, status, started_at, item_count) VALUES (?, ?, 'running', ?, 0)"
-  ).run(runId, deviceId, startedAt);
+    "INSERT INTO event_refresh_runs (id, household_id, status, started_at, item_count) VALUES (?, ?, 'running', ?, 0)"
+  ).run(runId, householdId, startedAt);
 
   try {
-    const preferences = getOrCreateFeedPreferences(db, config, deviceId);
+    const preferences = getOrCreateFeedPreferences(db, config, householdId);
     const items =
       config.hermesCommandMode === "mock"
         ? mockFeedItems()
         : parseHermesFeed(
-            (await runHermesCommand(buildFeedPrompt(preferences, config, db, deviceId), config, { runId })).reply,
+            (await runHermesCommand(buildFeedPrompt(preferences, config, db, householdId), config, { runId })).reply,
             config
           );
-    const itemCount = persistFeedItems(db, config, deviceId, items);
+    const itemCount = persistFeedItems(db, config, householdId, items);
     const finishedAt = nowIso();
     db.prepare(
-      "UPDATE feed_refresh_runs SET status = 'done', finished_at = ?, item_count = ? WHERE id = ?"
+      "UPDATE event_refresh_runs SET status = 'done', finished_at = ?, item_count = ? WHERE id = ?"
     ).run(finishedAt, itemCount, runId);
   } catch (error) {
     const finishedAt = nowIso();
     db.prepare(
-      "UPDATE feed_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE id = ?"
+      "UPDATE event_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE id = ?"
     ).run(finishedAt, error instanceof Error ? error.message : "Feed refresh failed", runId);
   }
 
-  const run = db.prepare("SELECT * FROM feed_refresh_runs WHERE id = ?").get(runId) as FeedRefreshRunRow;
+  const run = db.prepare("SELECT * FROM event_refresh_runs WHERE id = ?").get(runId) as FeedRefreshRunRow;
   return {
     run: runResponse(run),
-    items: listFeedItems(db, deviceId)
+    items: listFeedItems(db, householdId)
   };
 }
 
@@ -665,13 +707,13 @@ export async function refreshFeedForAllDevices(
   }
   schedulerRunning = true;
   try {
-    const devices = db.prepare("SELECT * FROM devices WHERE revoked_at IS NULL").all() as DeviceRow[];
+    const households = db.prepare("SELECT * FROM households ORDER BY created_at ASC").all() as HouseholdRow[];
     const results: FeedRefreshAllResult[] = [];
-    for (const device of devices) {
+    for (const household of households) {
       results.push({
-        deviceId: device.id,
-        deviceName: device.name,
-        result: await refreshFeedForDeviceUnlocked(db, config, device.id)
+        householdId: household.id,
+        householdName: household.name,
+        result: await refreshFeedForDeviceUnlocked(db, config, household.id)
       });
     }
     return results;
@@ -695,6 +737,7 @@ export function startFeedScheduler(db: Database.Database, config: Config): void 
     return;
   }
 
+  getDefaultHouseholdId(db);
   refreshFeedForAllDevices(db, config).catch(() => undefined);
 
   const scheduleNext = () => {

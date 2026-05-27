@@ -9,7 +9,7 @@ import type Database from "better-sqlite3";
 import { AuthError, verifyDeviceToken, verifySetupSecret } from "./auth.js";
 import { loadConfig, type Config } from "./config.js";
 import { createDeviceToken, createPairingCode, hashSecret } from "./crypto.js";
-import { openDatabase, type PairingCodeRow } from "./db.js";
+import { getDefaultHouseholdId, openDatabase, type PairingCodeRow } from "./db.js";
 import {
   clearRunningFeedRuns,
   createManualFeedItem,
@@ -25,6 +25,18 @@ import {
   updateFeedPreferences
 } from "./feed.js";
 import { type CommandActivity, runHermesCommand } from "./hermes.js";
+import { handleStructuredIntent } from "./intents.js";
+import {
+  archiveMaintenanceTask,
+  completeMaintenanceTask,
+  createMaintenanceTask,
+  listMaintenanceTasks
+} from "./maintenance.js";
+import {
+  createReminder,
+  listReminders,
+  startNotificationScheduler
+} from "./notifications.js";
 import {
   deleteMediaFromR2,
   deleteMediaFromStoredValue,
@@ -72,7 +84,33 @@ const feedFeedbackSchema = z.object({
 const manualFeedItemSchema = z.object({
   text: z.string().trim().min(1).max(220),
   startsAt: z.string().trim().min(1).max(120),
-  endsAt: z.string().trim().min(1).max(120).nullable().optional()
+  endsAt: z.string().trim().min(1).max(120).nullable().optional(),
+  remindOneWeekBefore: z.boolean().optional()
+});
+
+const pushTokenSchema = z.object({
+  expoPushToken: z.string().trim().max(512).nullable()
+});
+
+const maintenanceTaskSchema = z.object({
+  title: z.string().trim().min(1).max(180),
+  cadenceDays: z.number().int().positive().max(3650).nullable().optional(),
+  nextDueAt: z.string().trim().min(1).max(120).nullable().optional(),
+  notes: z.string().trim().max(1000).nullable().optional()
+});
+
+const maintenanceCompletionSchema = z.object({
+  completedAt: z.string().trim().min(1).max(120).nullable().optional(),
+  notes: z.string().trim().max(1000).nullable().optional()
+});
+
+const reminderSchema = z.object({
+  sourceType: z.string().trim().min(1).max(40).optional(),
+  sourceId: z.string().trim().min(1).max(120).nullable().optional(),
+  remindAt: z.string().trim().min(1).max(120),
+  title: z.string().trim().min(1).max(180),
+  body: z.string().trim().max(500).nullable().optional(),
+  data: z.record(z.unknown()).optional()
 });
 
 type CommandBody = z.infer<typeof commandSchema>;
@@ -369,6 +407,7 @@ function buildHermesText(text: string, media: Array<{ id: string; path: string; 
 }
 
 function createServer(config: Config, db: Database.Database) {
+  const defaultHouseholdId = getDefaultHouseholdId(db);
   const app = Fastify({
     logger: true,
     bodyLimit: 12 * 1024 * 1024
@@ -420,16 +459,22 @@ function createServer(config: Config, db: Database.Database) {
     verifySetupSecret(request, config);
     failStaleFeedRuns(db, config);
     const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'feed_%' ORDER BY name")
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND (name LIKE 'event_%' OR name IN ('events', 'maintenance_tasks', 'reminders', 'notification_deliveries')) ORDER BY name")
       .all() as Array<{ name: string }>;
     const devices = db
-      .prepare("SELECT id, name, created_at FROM devices WHERE revoked_at IS NULL ORDER BY created_at DESC")
-      .all() as Array<{ id: string; name: string; created_at: string }>;
+      .prepare("SELECT id, household_id, name, expo_push_token IS NOT NULL AS has_push_token, created_at FROM devices WHERE revoked_at IS NULL ORDER BY created_at DESC")
+      .all() as Array<{ id: string; household_id: string; name: string; has_push_token: number; created_at: string }>;
     const runs = db
-      .prepare("SELECT * FROM feed_refresh_runs ORDER BY started_at DESC LIMIT 10")
+      .prepare("SELECT * FROM event_refresh_runs ORDER BY started_at DESC LIMIT 10")
       .all() as Array<Record<string, unknown>>;
     const items = db
-      .prepare("SELECT title, starts_at, area, score, created_at FROM feed_items ORDER BY starts_at ASC LIMIT 10")
+      .prepare("SELECT title, starts_at, area, score, created_at FROM events ORDER BY starts_at ASC LIMIT 10")
+      .all() as Array<Record<string, unknown>>;
+    const reminders = db
+      .prepare("SELECT source_type, title, remind_at, status FROM reminders ORDER BY remind_at ASC LIMIT 10")
+      .all() as Array<Record<string, unknown>>;
+    const deliveries = db
+      .prepare("SELECT reminder_id, device_id, status, error_message, attempted_at FROM notification_deliveries ORDER BY attempted_at DESC LIMIT 10")
       .all() as Array<Record<string, unknown>>;
 
     return {
@@ -446,7 +491,9 @@ function createServer(config: Config, db: Database.Database) {
       tables: tables.map((table) => table.name),
       devices,
       runs,
-      items
+      items,
+      reminders,
+      deliveries
     };
   });
 
@@ -456,8 +503,8 @@ function createServer(config: Config, db: Database.Database) {
     return {
       results,
       status: {
-        runs: db.prepare("SELECT * FROM feed_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
-        items: db.prepare("SELECT title, starts_at, area, score, created_at FROM feed_items ORDER BY starts_at ASC LIMIT 10").all()
+        runs: db.prepare("SELECT * FROM event_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
+        items: db.prepare("SELECT title, starts_at, area, score, created_at FROM events ORDER BY starts_at ASC LIMIT 10").all()
       }
     };
   });
@@ -468,8 +515,8 @@ function createServer(config: Config, db: Database.Database) {
     return {
       results,
       status: {
-        runs: db.prepare("SELECT * FROM feed_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
-        items: db.prepare("SELECT title, starts_at, area, score, created_at FROM feed_items ORDER BY starts_at ASC LIMIT 10").all()
+        runs: db.prepare("SELECT * FROM event_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
+        items: db.prepare("SELECT title, starts_at, area, score, created_at FROM events ORDER BY starts_at ASC LIMIT 10").all()
       }
     };
   });
@@ -480,8 +527,8 @@ function createServer(config: Config, db: Database.Database) {
     return {
       cleared,
       status: {
-        runs: db.prepare("SELECT * FROM feed_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
-        items: db.prepare("SELECT title, starts_at, area, score, created_at FROM feed_items ORDER BY starts_at ASC LIMIT 10").all()
+        runs: db.prepare("SELECT * FROM event_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
+        items: db.prepare("SELECT title, starts_at, area, score, created_at FROM events ORDER BY starts_at ASC LIMIT 10").all()
       }
     };
   });
@@ -531,38 +578,53 @@ function createServer(config: Config, db: Database.Database) {
 
   app.get("/feed/preferences", async (request) => {
     const device = verifyDeviceToken(request, db, config);
-    return getOrCreateFeedPreferences(db, config, device.id);
+    return getOrCreateFeedPreferences(db, config, device.household_id);
   });
 
   app.put("/feed/preferences", async (request) => {
     const device = verifyDeviceToken(request, db, config);
     const body = validateBody(feedPreferencesSchema, request.body);
-    return updateFeedPreferences(db, config, device.id, body);
+    return updateFeedPreferences(db, config, device.household_id, body);
   });
 
   app.get("/feed", async (request) => {
     const device = verifyDeviceToken(request, db, config);
-    const preferences = getOrCreateFeedPreferences(db, config, device.id);
+    const preferences = getOrCreateFeedPreferences(db, config, device.household_id);
     return {
       preferences,
-      run: latestFeedRun(db, device.id),
-      items: listFeedItems(db, device.id)
+      run: latestFeedRun(db, device.household_id),
+      items: listFeedItems(db, device.household_id)
     };
   });
 
   app.post("/feed/refresh", async (request) => {
     const device = verifyDeviceToken(request, db, config);
-    return refreshFeedForDevice(db, config, device.id);
+    return refreshFeedForDevice(db, config, device.household_id);
   });
 
   app.post("/feed/items", async (request, reply) => {
     const device = verifyDeviceToken(request, db, config);
     const body = validateBody(manualFeedItemSchema, request.body);
     try {
-      const item = createManualFeedItem(db, device.id, body);
+      const item = createManualFeedItem(db, device.household_id, body);
       return {
         item,
-        items: listFeedItems(db, device.id)
+        items: listFeedItems(db, device.household_id)
+      };
+    } catch (error) {
+      reply.status(400).send({ error: errorMessage(error) });
+      return;
+    }
+  });
+
+  app.post("/events", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const body = validateBody(manualFeedItemSchema, request.body);
+    try {
+      const item = createManualFeedItem(db, device.household_id, body);
+      return {
+        item,
+        items: listFeedItems(db, device.household_id)
       };
     } catch (error) {
       reply.status(400).send({ error: errorMessage(error) });
@@ -574,13 +636,87 @@ function createServer(config: Config, db: Database.Database) {
     const device = verifyDeviceToken(request, db, config);
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = validateBody(feedFeedbackSchema, request.body);
-    const item = setFeedFeedback(db, device.id, params.id, body.value);
+    const item = setFeedFeedback(db, device.household_id, params.id, body.value);
     if (!item) {
       reply.status(404).send({ error: "Feed item not found" });
       return;
     }
 
     return { item };
+  });
+
+  app.post("/events/:id/feedback", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = validateBody(feedFeedbackSchema, request.body);
+    const item = setFeedFeedback(db, device.household_id, params.id, body.value);
+    if (!item) {
+      reply.status(404).send({ error: "Event not found" });
+      return;
+    }
+
+    return { item };
+  });
+
+  app.put("/devices/me/push-token", async (request) => {
+    const device = verifyDeviceToken(request, db, config);
+    const body = validateBody(pushTokenSchema, request.body);
+    db.prepare("UPDATE devices SET expo_push_token = ? WHERE id = ?").run(body.expoPushToken || null, device.id);
+    return { ok: true };
+  });
+
+  app.get("/maintenance", async (request) => {
+    const device = verifyDeviceToken(request, db, config);
+    return { tasks: listMaintenanceTasks(db, device.household_id) };
+  });
+
+  app.post("/maintenance", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const body = validateBody(maintenanceTaskSchema, request.body);
+    try {
+      return { task: createMaintenanceTask(db, device.household_id, body), tasks: listMaintenanceTasks(db, device.household_id) };
+    } catch (error) {
+      reply.status(400).send({ error: errorMessage(error) });
+      return;
+    }
+  });
+
+  app.post("/maintenance/:id/complete", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = validateBody(maintenanceCompletionSchema, request.body);
+    const task = completeMaintenanceTask(db, device.household_id, params.id, body);
+    if (!task) {
+      reply.status(404).send({ error: "Maintenance task not found" });
+      return;
+    }
+    return { task, tasks: listMaintenanceTasks(db, device.household_id) };
+  });
+
+  app.post("/maintenance/:id/archive", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    if (!archiveMaintenanceTask(db, device.household_id, params.id)) {
+      reply.status(404).send({ error: "Maintenance task not found" });
+      return;
+    }
+    return { ok: true, tasks: listMaintenanceTasks(db, device.household_id) };
+  });
+
+  app.get("/reminders", async (request) => {
+    const device = verifyDeviceToken(request, db, config);
+    return { reminders: listReminders(db, device.household_id) };
+  });
+
+  app.post("/reminders", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const body = validateBody(reminderSchema, request.body);
+    try {
+      return { reminder: createReminder(db, device.household_id, body), reminders: listReminders(db, device.household_id) };
+    } catch (error) {
+      reply.status(400).send({ error: errorMessage(error) });
+      return;
+    }
   });
 
   app.get("/media/:id", async (request, reply) => {
@@ -666,8 +802,8 @@ function createServer(config: Config, db: Database.Database) {
       }
 
       db.prepare(
-        "INSERT INTO devices (id, name, token_hash, expo_push_token, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL)"
-      ).run(deviceId, body.deviceName.trim(), tokenHash, body.expoPushToken ?? null, createdAt);
+        "INSERT INTO devices (id, household_id, name, token_hash, expo_push_token, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, NULL)"
+      ).run(deviceId, defaultHouseholdId, body.deviceName.trim(), tokenHash, body.expoPushToken ?? null, createdAt);
       db.prepare(
         "INSERT INTO audit_log (id, device_id, action, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)"
       ).run(randomUUID(), deviceId, "device.paired", JSON.stringify({ deviceName: body.deviceName.trim() }), createdAt);
@@ -693,6 +829,27 @@ function createServer(config: Config, db: Database.Database) {
     const device = verifyDeviceToken(request, db, config);
     const body = validateBody(commandSchema, request.body);
     const createdAt = nowIso();
+    const structured = body.text ? handleStructuredIntent(db, device.household_id, body.text) : null;
+    if (structured && !body.media?.length) {
+      db.prepare(
+        "INSERT INTO audit_log (id, device_id, action, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(
+        randomUUID(),
+        device.id,
+        "command.structured",
+        JSON.stringify({ text: body.text, reply: structured.reply }),
+        createdAt
+      );
+      return {
+        reply: structured.reply,
+        media: [],
+        replyMedia: [],
+        activity: [
+          commandActivity("compoota.server.received", "House-server received the message"),
+          commandActivity("compoota.server.structured", "Updated household memory")
+        ]
+      };
+    }
     const media = saveCommandMedia(body, device.id, db, config, createdAt);
     const hermesText = buildHermesText(body.text, media);
     const activity: CommandActivity[] = [
@@ -751,7 +908,8 @@ function createServer(config: Config, db: Database.Database) {
     const body = validateBody(commandSchema, request.body);
     const createdAt = nowIso();
     const runId = randomUUID();
-    const media = saveCommandMedia(body, device.id, db, config, createdAt);
+    const structured = body.text ? handleStructuredIntent(db, device.household_id, body.text) : null;
+    const media = structured && !body.media?.length ? [] : saveCommandMedia(body, device.id, db, config, createdAt);
     const hermesText = buildHermesText(body.text, media);
     const activity: CommandActivity[] = [];
 
@@ -773,6 +931,22 @@ function createServer(config: Config, db: Database.Database) {
 
     emit(commandActivity("compoota.server.received", "House-server received the message"));
     emit(commandActivity("compoota.server.auth", "Device token checked out", `Device: ${device.name}`));
+    if (structured && !body.media?.length) {
+      emit(commandActivity("compoota.server.structured", "Updated household memory"));
+      db.prepare(
+        "INSERT INTO audit_log (id, device_id, action, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(
+        randomUUID(),
+        device.id,
+        "command.structured",
+        JSON.stringify({ text: body.text, reply: structured.reply, streamed: true, runId }),
+        createdAt
+      );
+      sendSse(reply, "reply", { reply: structured.reply, media: [], activity });
+      sendSse(reply, "done", { ok: true });
+      reply.raw.end();
+      return;
+    }
     for (const item of media) {
       emit(commandActivity("compoota.server.media", "Stored attached photo", item.path));
     }
@@ -832,6 +1006,7 @@ const db = openDatabase(config.databasePath);
 const app = createServer(config, db);
 
 startFeedScheduler(db, config);
+startNotificationScheduler(db);
 
 app.listen({ port: config.port, host: "0.0.0.0" }).catch((error) => {
   app.log.error(error);
