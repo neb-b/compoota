@@ -9,10 +9,27 @@ if [[ ! -f ".env" ]]; then
   exit 1
 fi
 
-compose=(docker compose)
+if command -v git >/dev/null 2>&1; then
+  git fetch
+  git pull --ff-only
+else
+  echo "git is required to update the house-server before restart." >&2
+  exit 1
+fi
+
+docker_cmd=(docker)
 if ! docker compose version >/dev/null 2>&1; then
+  if sudo -n docker compose version >/dev/null 2>&1; then
+    docker_cmd=(sudo docker)
+  fi
+fi
+
+compose=("${docker_cmd[@]}" compose)
+if ! "${compose[@]}" version >/dev/null 2>&1; then
   if command -v docker-compose >/dev/null 2>&1; then
     compose=(docker-compose)
+  elif sudo -n docker-compose version >/dev/null 2>&1; then
+    compose=(sudo docker-compose)
   else
     echo "Docker Compose is required. Install docker compose or docker-compose." >&2
     exit 1
