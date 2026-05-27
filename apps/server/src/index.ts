@@ -11,12 +11,15 @@ import { loadConfig, type Config } from "./config.js";
 import { createDeviceToken, createPairingCode, hashSecret } from "./crypto.js";
 import { openDatabase, type PairingCodeRow } from "./db.js";
 import {
+  clearRunningFeedRuns,
+  createManualFeedItem,
   getOrCreateFeedPreferences,
   failStaleFeedRuns,
   latestFeedRun,
   listFeedItems,
   refreshFeedForAllDevices,
   refreshFeedForDevice,
+  seedSampleFeedForAllDevices,
   setFeedFeedback,
   startFeedScheduler,
   updateFeedPreferences
@@ -64,6 +67,12 @@ const feedPreferencesSchema = z.object({
 
 const feedFeedbackSchema = z.object({
   value: z.enum(["like", "dislike", "hide", "save", "clear"])
+});
+
+const manualFeedItemSchema = z.object({
+  text: z.string().trim().min(1).max(220),
+  startsAt: z.string().trim().min(1).max(120),
+  endsAt: z.string().trim().min(1).max(120).nullable().optional()
 });
 
 type CommandBody = z.infer<typeof commandSchema>;
@@ -431,7 +440,8 @@ function createServer(config: Config, db: Database.Database) {
         location: config.feedDefaultLocation,
         radiusMiles: config.feedDefaultRadiusMiles,
         maxItems: config.feedMaxItems,
-        inclusionThreshold: config.feedInclusionThreshold
+        inclusionThreshold: config.feedInclusionThreshold,
+        lookaheadDays: config.feedLookaheadDays
       },
       tables: tables.map((table) => table.name),
       devices,
@@ -445,6 +455,30 @@ function createServer(config: Config, db: Database.Database) {
     const results = await refreshFeedForAllDevices(db, config);
     return {
       results,
+      status: {
+        runs: db.prepare("SELECT * FROM feed_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
+        items: db.prepare("SELECT title, starts_at, area, score, created_at FROM feed_items ORDER BY starts_at ASC LIMIT 10").all()
+      }
+    };
+  });
+
+  app.post("/setup/feed/seed", async (request) => {
+    verifySetupSecret(request, config);
+    const results = seedSampleFeedForAllDevices(db, config);
+    return {
+      results,
+      status: {
+        runs: db.prepare("SELECT * FROM feed_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
+        items: db.prepare("SELECT title, starts_at, area, score, created_at FROM feed_items ORDER BY starts_at ASC LIMIT 10").all()
+      }
+    };
+  });
+
+  app.post("/setup/feed/clear-running", async (request) => {
+    verifySetupSecret(request, config);
+    const cleared = clearRunningFeedRuns(db);
+    return {
+      cleared,
       status: {
         runs: db.prepare("SELECT * FROM feed_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
         items: db.prepare("SELECT title, starts_at, area, score, created_at FROM feed_items ORDER BY starts_at ASC LIMIT 10").all()
@@ -519,6 +553,21 @@ function createServer(config: Config, db: Database.Database) {
   app.post("/feed/refresh", async (request) => {
     const device = verifyDeviceToken(request, db, config);
     return refreshFeedForDevice(db, config, device.id);
+  });
+
+  app.post("/feed/items", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const body = validateBody(manualFeedItemSchema, request.body);
+    try {
+      const item = createManualFeedItem(db, device.id, body);
+      return {
+        item,
+        items: listFeedItems(db, device.id)
+      };
+    } catch (error) {
+      reply.status(400).send({ error: errorMessage(error) });
+      return;
+    }
   });
 
   app.post("/feed/items/:id/feedback", async (request, reply) => {

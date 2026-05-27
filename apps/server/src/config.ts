@@ -25,6 +25,7 @@ export type Config = {
   feedDefaultLocation: string;
   feedDefaultRadiusMiles: number;
   feedInclusionThreshold: number;
+  feedLookaheadDays: number;
 };
 
 function readNumber(name: string, fallback: number): number {
@@ -131,6 +132,7 @@ export function loadConfig(): Config {
     feedMaxItems: readNumber("FEED_MAX_ITEMS", 30),
     feedDefaultLocation: readString("FEED_DEFAULT_LOCATION", "Saline, MI"),
     feedDefaultRadiusMiles: readNumber("FEED_DEFAULT_RADIUS_MILES", 30),
-    feedInclusionThreshold: readNumber("FEED_INCLUSION_THRESHOLD", 60)
+    feedInclusionThreshold: readNumber("FEED_INCLUSION_THRESHOLD", 60),
+    feedLookaheadDays: readNumber("FEED_LOOKAHEAD_DAYS", 90)
   };
 }

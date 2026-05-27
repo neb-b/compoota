@@ -15,6 +15,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -123,6 +124,8 @@ type FeedItem = {
   updatedAt: string
 }
 
+type FeedTab = 'all' | 'saved'
+
 type PendingMedia = Omit<MessageMedia, 'remoteUrl'> & {
   uri: string
   base64: string
@@ -132,6 +135,7 @@ type GlassSurfaceProps = {
   children: React.ReactNode
   colorScheme: 'light' | 'dark'
   enabled: boolean
+  glassEffectStyle?: 'clear' | 'regular'
   isInteractive?: boolean
   style: StyleProp<ViewStyle>
   tintColor?: string
@@ -139,9 +143,16 @@ type GlassSurfaceProps = {
 
 const STORAGE_KEY = 'compoota.connection.v1'
 const PREFERENCES_KEY = 'compoota.connection-preferences.v1'
+const DEV_SERVER_URL = process.env.EXPO_PUBLIC_COMPOOTA_DEV_SERVER_URL
+const DEV_DEVICE_ID = process.env.EXPO_PUBLIC_COMPOOTA_DEV_DEVICE_ID
+const DEV_DEVICE_TOKEN = process.env.EXPO_PUBLIC_COMPOOTA_DEV_DEVICE_TOKEN
+const DEV_DEVICE_NAME = process.env.EXPO_PUBLIC_COMPOOTA_DEV_DEVICE_NAME ?? 'Local Simulator'
 const MESSAGE_HISTORY_KEY_PREFIX = 'compoota.messages.v1.'
 const SIDEBAR_EDGE_HIT_SLOP = 30
 const SIDEBAR_LAYER_RADIUS = 58
+const FEED_PAGE_TAB_WIDTH = 84
+const FEED_PAGE_TAB_HEIGHT = 38
+const FEED_PAGE_TAB_PADDING = 4
 const SIDEBAR_SPRING = {
   damping: 28,
   mass: 0.9,
@@ -183,6 +194,7 @@ function GlassSurface({
   children,
   colorScheme,
   enabled,
+  glassEffectStyle = 'regular',
   isInteractive,
   style,
   tintColor,
@@ -194,7 +206,7 @@ function GlassSurface({
   return (
     <GlassView
       colorScheme={colorScheme}
-      glassEffectStyle="regular"
+      glassEffectStyle={{ style: glassEffectStyle, animate: true, animationDuration: 0.22 }}
       isInteractive={isInteractive}
       style={style}
       tintColor={tintColor}
@@ -507,22 +519,47 @@ function parseFeedRun(value: unknown): FeedRun | null {
   }
 }
 
-function formatFeedDate(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
+function formatFeedDate(item: FeedItem): string {
+  const startsAt = new Date(item.startsAt)
+  if (Number.isNaN(startsAt.getTime())) {
+    return item.startsAt
   }
-  return new Intl.DateTimeFormat(undefined, {
+  const dateFormatter = new Intl.DateTimeFormat(undefined, {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
+  })
+  const timeFormatter = new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: '2-digit',
-  }).format(date)
+  })
+  const startDate = dateFormatter.format(startsAt)
+  const startTime = timeFormatter.format(startsAt)
+
+  if (item.endsAt) {
+    const endsAt = new Date(item.endsAt)
+    if (!Number.isNaN(endsAt.getTime())) {
+      const endTime = timeFormatter.format(endsAt)
+      const endDate = dateFormatter.format(endsAt)
+      return startDate === endDate
+        ? `${startDate}, ${startTime} - ${endTime}`
+        : `${startDate}, ${startTime} - ${endDate}, ${endTime}`
+    }
+  }
+
+  return `${startDate} at ${startTime}`
 }
 
 function formatFeedMeta(item: FeedItem): string {
-  return [item.venue, item.area, item.priceText].filter(Boolean).join(' · ')
+  return [item.venue, item.area].filter(Boolean).join(' · ')
+}
+
+function canOpenFeedItem(item: FeedItem): boolean {
+  return item.sourceUrl.startsWith('http://') || item.sourceUrl.startsWith('https://')
+}
+
+function isPersonalFeedItem(item: FeedItem): boolean {
+  return item.category === 'personal' || item.sourceUrl.startsWith('compoota://personal-event/')
 }
 
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
@@ -673,12 +710,17 @@ export default function HomeScreen() {
   const [mediaSheetVisible, setMediaSheetVisible] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
   const [feedItems, setFeedItems] = useState<FeedItem[]>([])
+  const [feedTab, setFeedTab] = useState<FeedTab>('all')
   const [feedPreferences, setFeedPreferences] = useState<FeedPreferences | null>(null)
   const [feedRun, setFeedRun] = useState<FeedRun | null>(null)
   const [feedLoading, setFeedLoading] = useState(false)
   const [feedRefreshing, setFeedRefreshing] = useState(false)
   const [feedError, setFeedError] = useState('')
   const [feedSettingsVisible, setFeedSettingsVisible] = useState(false)
+  const [newFeedEventVisible, setNewFeedEventVisible] = useState(false)
+  const [newFeedEventDate, setNewFeedEventDate] = useState('')
+  const [newFeedEventText, setNewFeedEventText] = useState('')
+  const [newFeedEventSaving, setNewFeedEventSaving] = useState(false)
   const [feedLocationDraft, setFeedLocationDraft] = useState('Saline, MI')
   const [feedRadiusDraft, setFeedRadiusDraft] = useState('30')
   const [mediaLibrary, setMediaLibrary] = useState<MessageMedia[]>([])
@@ -699,6 +741,7 @@ export default function HomeScreen() {
   const sidebarOpenValue = useSharedValue(false)
   const expandedMediaTranslateX = useSharedValue(0)
   const expandedMediaTranslateY = useSharedValue(0)
+  const feedTabTranslateX = useSharedValue(0)
 
   const renderComposer = () => (
     <>
@@ -785,6 +828,20 @@ export default function HomeScreen() {
   )
 
   const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId)
+  const visibleFeedItems = useMemo(
+    () => (feedTab === 'saved' ? feedItems.filter(isPersonalFeedItem) : feedItems),
+    [feedItems, feedTab],
+  )
+  useEffect(() => {
+    feedTabTranslateX.value = withSpring(feedTab === 'saved' ? FEED_PAGE_TAB_WIDTH : 0, {
+      damping: 24,
+      mass: 0.8,
+      stiffness: 260,
+    })
+  }, [feedTab, feedTabTranslateX])
+  const feedTabIndicatorStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: feedTabTranslateX.value }],
+  }))
   const hasMessages = messages.some(
     (message) => message.text || message.media?.length || message.activity?.length,
   )
@@ -948,6 +1005,70 @@ export default function HomeScreen() {
     setFeedRadiusDraft(String(feedPreferences?.radiusMiles ?? 30))
     setFeedSettingsVisible(true)
   }
+
+  const openNewFeedEvent = () => {
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    tomorrow.setMinutes(0, 0, 0)
+    setNewFeedEventDate(
+      new Intl.DateTimeFormat(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      }).format(tomorrow),
+    )
+    setNewFeedEventText('')
+    setNewFeedEventVisible(true)
+  }
+
+  const saveNewFeedEvent = useCallback(async () => {
+    if (!connection || newFeedEventSaving) {
+      return
+    }
+
+    setFeedError('')
+    setNewFeedEventSaving(true)
+    try {
+      const response = await fetchWithTimeout(
+        `${connection.serverUrl}/feed/items`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${connection.deviceToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            startsAt: newFeedEventDate,
+            text: newFeedEventText,
+          }),
+        },
+        12000,
+      )
+      if (!response.ok) {
+        throw new Error(await readError(response))
+      }
+
+      const data = (await response.json()) as { items?: unknown; item?: unknown }
+      const nextItems = parseFeedItems(data.items)
+      if (nextItems.length) {
+        setFeedItems(nextItems)
+      } else {
+        const [item] = parseFeedItems(data.item ? [data.item] : [])
+        if (item) {
+          setFeedItems((current) =>
+            [...current, item].sort(
+              (left, right) => new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime(),
+            ),
+          )
+        }
+      }
+      setNewFeedEventVisible(false)
+    } catch (err) {
+      setFeedError(err instanceof Error ? err.message : 'Event could not be saved.')
+    } finally {
+      setNewFeedEventSaving(false)
+    }
+  }, [connection, newFeedEventDate, newFeedEventSaving, newFeedEventText])
 
   const saveFeedSettings = useCallback(async () => {
     if (!connection) {
@@ -1255,6 +1376,27 @@ export default function HomeScreen() {
             setServerUrl(parsed.serverUrl)
             setMessages(storedMessages ?? [])
           }
+        }
+
+        if (!stored && __DEV__ && DEV_SERVER_URL && DEV_DEVICE_ID && DEV_DEVICE_TOKEN) {
+          const nextConnection = {
+            serverUrl: normalizeServerUrl(DEV_SERVER_URL),
+            deviceId: DEV_DEVICE_ID,
+            deviceToken: DEV_DEVICE_TOKEN,
+          }
+          const nextPreferences = {
+            serverUrl: nextConnection.serverUrl,
+            deviceName: DEV_DEVICE_NAME,
+          }
+
+          await Promise.all([
+            AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextConnection)),
+            AsyncStorage.setItem(PREFERENCES_KEY, JSON.stringify(nextPreferences)),
+          ])
+          setConnection(nextConnection)
+          setServerUrl(nextConnection.serverUrl)
+          setDeviceName(DEV_DEVICE_NAME)
+          setMessages([])
         }
       } catch {
         setError('Saved connection could not be loaded. Pair again to continue.')
@@ -1728,7 +1870,7 @@ export default function HomeScreen() {
 
         <GestureDetector gesture={sidebarPanGesture}>
           <Animated.View style={[styles.mainPanel, sidebarMainStyle]}>
-            <SafeAreaView style={styles.chatSafeArea}>
+            <SafeAreaView edges={['top']} style={styles.chatSafeArea}>
               <View style={styles.chatShell}>
                 <LinearGradient
                   colors={[
@@ -1760,31 +1902,50 @@ export default function HomeScreen() {
                     </Pressable>
 
                   {activeScreen === 'home' ? (
-                    <GlassSurface
-                      colorScheme={isDark ? 'dark' : 'light'}
-                      enabled={liquidGlassEnabled}
-                      isInteractive
-                      style={styles.feedTopMenu}
-                      tintColor={colors.glassTint}
-                    >
+                    <>
+                      <View style={styles.feedPageTabBar}>
+                        <GlassSurface
+                          colorScheme={isDark ? 'dark' : 'light'}
+                          enabled={liquidGlassEnabled}
+                          isInteractive
+                          style={styles.feedPageTabBarGlass}
+                          tintColor={colors.glassTint}
+                        >
+                          <View />
+                        </GlassSurface>
+                        <Animated.View style={[styles.feedPageTabIndicator, feedTabIndicatorStyle]} />
+                        {(['all', 'saved'] as const).map((tab) => {
+                          const selected = feedTab === tab
+                          return (
+                            <Pressable
+                              accessibilityLabel={tab === 'all' ? 'Show all events' : 'Show saved events'}
+                              key={tab}
+                              onPress={() => setFeedTab(tab)}
+                              style={({ pressed }) => [styles.feedPageTabButton, pressed && styles.pressed]}
+                            >
+                              <Text style={[styles.feedTabText, selected && styles.feedTabTextActive]}>
+                                {tab === 'all' ? 'All' : 'Saved'}
+                              </Text>
+                            </Pressable>
+                          )
+                        })}
+                      </View>
                       <Pressable
-                        accessibilityLabel="Edit feed settings"
-                        onPress={openFeedSettings}
-                        style={({ pressed }) => [styles.feedTopMenuButton, pressed && styles.pressed]}
+                        accessibilityLabel="Add event"
+                        onPress={openNewFeedEvent}
+                        style={({ pressed }) => [styles.topIconButtonHitbox, pressed && styles.glassPressed]}
                       >
-                        <AppleIcon color={colors.text} name="slider.horizontal.3" size={18} />
+                        <GlassSurface
+                          colorScheme={isDark ? 'dark' : 'light'}
+                          enabled={liquidGlassEnabled}
+                          isInteractive
+                          style={styles.topIconButton}
+                          tintColor={colors.glassTint}
+                        >
+                          <AppleIcon color={colors.text} name="plus" size={24} />
+                        </GlassSurface>
                       </Pressable>
-                      <View style={styles.feedTopMenuDivider} />
-                      <Pressable
-                        accessibilityLabel="Refresh feed"
-                        disabled={feedRefreshing}
-                        onPress={refreshFeed}
-                        style={({ pressed }) => [styles.feedTopMenuButton, pressed && styles.pressed]}
-                      >
-                        {feedRefreshing ? <ActivityIndicator color={colors.text} size="small" /> : null}
-                        {!feedRefreshing ? <AppleIcon color={colors.text} name="arrow.clockwise" size={19} /> : null}
-                      </Pressable>
-                    </GlassSurface>
+                    </>
                   ) : activeScreen === 'assistant' && hasMessages ? (
                     <Pressable
                       accessibilityLabel="Start new chat"
@@ -1803,21 +1964,43 @@ export default function HomeScreen() {
                     </Pressable>
                   ) : null}
                 </View>
-
                 {activeScreen === 'home' ? (
                   <ScrollView
                     contentContainerStyle={styles.feedContent}
                     keyboardShouldPersistTaps="handled"
+                    refreshControl={
+                      <RefreshControl
+                        refreshing={feedLoading || feedRefreshing}
+                        onRefresh={refreshFeed}
+                        tintColor={colors.text}
+                      />
+                    }
                     style={styles.messages}
                   >
                     {feedLoading ? (
                       <ActivityIndicator color={colors.text} style={styles.feedLoader} />
                     ) : feedError ? (
                       <Text style={styles.feedEmptyText}>{feedError}</Text>
-                    ) : feedItems.length ? (
+                    ) : visibleFeedItems.length ? (
                       <View style={styles.feedList}>
-                        {feedItems.map((item) => (
-                          <View key={item.id} style={styles.feedCard}>
+                        {visibleFeedItems.map((item) => {
+                          const personal = isPersonalFeedItem(item)
+                          return (
+                          <Pressable
+                            accessibilityLabel={`Open ${item.title}`}
+                            accessibilityRole="link"
+                            key={item.id}
+                            onPress={() => {
+                              if (canOpenFeedItem(item)) {
+                                Linking.openURL(item.sourceUrl).catch(() => undefined)
+                              }
+                            }}
+                            style={({ pressed }) => [
+                              styles.feedItem,
+                              personal && styles.feedItemPersonal,
+                              pressed && styles.feedItemPressed,
+                            ]}
+                          >
                             {item.imageUrl ? (
                               <Image
                                 accessibilityLabel={item.title}
@@ -1826,16 +2009,19 @@ export default function HomeScreen() {
                                 style={styles.feedCardImage}
                               />
                             ) : null}
-                            <View style={styles.feedCardTop}>
-                              <Text style={styles.feedCategory}>{item.category}</Text>
-                              <Text style={styles.feedDate}>{formatFeedDate(item.startsAt)}</Text>
+                            <View style={styles.feedDateRow}>
+                              <Text style={[styles.feedDate, personal && styles.feedDatePersonal]}>
+                                {formatFeedDate(item)}
+                              </Text>
+                              {personal ? <Text style={styles.feedPersonalPill}>Saved</Text> : null}
                             </View>
-                            <Text style={styles.feedCardTitle}>{item.title}</Text>
+                            <Text style={[styles.feedCardTitle, personal && styles.feedCardTitlePersonal]}>
+                              {item.title}
+                            </Text>
                             {formatFeedMeta(item) ? (
                               <Text style={styles.feedMeta}>{formatFeedMeta(item)}</Text>
                             ) : null}
-                            <Text style={styles.feedSummary}>{item.summary}</Text>
-                            <Text style={styles.feedReason}>{item.reason}</Text>
+                            {item.summary ? <Text style={styles.feedSummary}>{item.summary}</Text> : null}
                             <View style={styles.feedActions}>
                               <Pressable
                                 accessibilityLabel="Like feed item"
@@ -1869,43 +2055,19 @@ export default function HomeScreen() {
                                   size={18}
                                 />
                               </Pressable>
-                              <Pressable
-                                accessibilityLabel="Save feed item"
-                                onPress={() => sendFeedFeedback(item, item.feedback === 'save' ? 'clear' : 'save')}
-                                style={({ pressed }) => [
-                                  styles.feedActionButton,
-                                  item.feedback === 'save' && styles.feedActionButtonActive,
-                                  pressed && styles.pressed,
-                                ]}
-                              >
-                                <AppleIcon
-                                  color={item.feedback === 'save' ? colors.actionText : colors.text}
-                                  name="bookmark"
-                                  size={18}
-                                />
-                              </Pressable>
-                              <Pressable
-                                accessibilityLabel="Hide feed item"
-                                onPress={() => sendFeedFeedback(item, 'hide')}
-                                style={({ pressed }) => [styles.feedActionButton, pressed && styles.pressed]}
-                              >
-                                <AppleIcon color={colors.text} name="eye.slash" size={18} />
-                              </Pressable>
-                              <Pressable
-                                accessibilityLabel="Open source"
-                                onPress={() => Linking.openURL(item.sourceUrl).catch(() => undefined)}
-                                style={({ pressed }) => [styles.feedOpenButton, pressed && styles.pressed]}
-                              >
-                                <Text style={styles.feedOpenButtonText}>Open</Text>
-                              </Pressable>
                             </View>
-                          </View>
-                        ))}
+                          </Pressable>
+                          )
+                        })}
                       </View>
                     ) : (
                       <View style={styles.feedEmpty}>
-                        <Text style={styles.feedEmptyTitle}>No upcoming items yet</Text>
-                        <Text style={styles.feedEmptyText}>Pull to refresh or tap the refresh button.</Text>
+                        <Text style={styles.feedEmptyTitle}>
+                          {feedTab === 'saved' ? 'No saved events yet' : 'No upcoming items yet'}
+                        </Text>
+                        <Text style={styles.feedEmptyText}>
+                          {feedTab === 'saved' ? 'Tap plus to add one.' : 'Pull to refresh.'}
+                        </Text>
                       </View>
                     )}
                   </ScrollView>
@@ -2117,6 +2279,58 @@ export default function HomeScreen() {
       </Modal>
       <Modal
         animationType="fade"
+        onRequestClose={() => setNewFeedEventVisible(false)}
+        transparent
+        visible={newFeedEventVisible}
+      >
+        <View style={styles.mediaModalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setNewFeedEventVisible(false)} />
+          <View style={styles.feedSettingsSheet}>
+            <Text style={styles.feedSettingsTitle}>New event</Text>
+            <View style={styles.field}>
+              <TextInput
+                autoCapitalize="words"
+                onChangeText={setNewFeedEventDate}
+                placeholder="May 30, 7:00 PM"
+                placeholderTextColor={colors.placeholder}
+                style={styles.input}
+                value={newFeedEventDate}
+              />
+            </View>
+            <View style={styles.field}>
+              <TextInput
+                autoCapitalize="sentences"
+                multiline
+                onChangeText={setNewFeedEventText}
+                placeholder="What is happening?"
+                placeholderTextColor={colors.placeholder}
+                style={[styles.input, styles.newFeedEventTextInput]}
+                value={newFeedEventText}
+              />
+            </View>
+            <View style={styles.feedSettingsActions}>
+              <Pressable
+                onPress={() => setNewFeedEventVisible(false)}
+                style={({ pressed }) => [styles.feedSettingsSecondary, pressed && styles.pressed]}
+              >
+                <Text style={styles.feedSettingsSecondaryText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                disabled={newFeedEventSaving}
+                onPress={saveNewFeedEvent}
+                style={({ pressed }) => [
+                  styles.feedSettingsPrimary,
+                  (pressed || newFeedEventSaving) && styles.pressed,
+                ]}
+              >
+                <Text style={styles.feedSettingsPrimaryText}>Save</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="fade"
         onRequestClose={closeExpandedMedia}
         transparent
         visible={Boolean(selectedMedia)}
@@ -2236,6 +2450,7 @@ function createColors(isDark: boolean) {
     action: isDark ? '#ffffff' : '#0b0b0b',
     actionText: isDark ? '#111111' : '#ffffff',
     glassTint: isDark ? 'rgba(24,24,24,0.62)' : 'rgba(255,255,255,0.58)',
+    glassClearTint: isDark ? 'rgba(24,24,24,0.30)' : 'rgba(255,255,255,0.20)',
     headerFadeStrong: isDark ? 'rgba(17,17,17,0.98)' : 'rgba(248,248,247,0.98)',
     headerFadeMedium: isDark ? 'rgba(17,17,17,0.72)' : 'rgba(248,248,247,0.72)',
     headerFadeSoft: isDark ? 'rgba(17,17,17,0.38)' : 'rgba(248,248,247,0.38)',
@@ -2376,7 +2591,7 @@ function createStyles(
       top: 0,
       left: 0,
       right: 0,
-      height: 92,
+      height: 132,
       zIndex: 2,
     },
     topButtons: {
@@ -2386,6 +2601,7 @@ function createStyles(
       right: 16,
       zIndex: 3,
       flexDirection: 'row',
+      alignItems: 'center',
       justifyContent: 'space-between',
       pointerEvents: 'box-none',
     },
@@ -2415,13 +2631,19 @@ function createStyles(
       shadowRadius: 18,
       shadowOffset: { width: 0, height: 10 },
     },
-    feedTopMenu: {
-      width: 94,
-      height: 46,
+    feedPageTabBar: {
+      width: FEED_PAGE_TAB_WIDTH * 2 + FEED_PAGE_TAB_PADDING * 2,
+      height: FEED_PAGE_TAB_HEIGHT + FEED_PAGE_TAB_PADDING * 2,
       borderRadius: 23,
+      padding: FEED_PAGE_TAB_PADDING,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
+      overflow: 'hidden',
+    },
+    feedPageTabBarGlass: {
+      ...StyleSheet.absoluteFillObject,
+      borderRadius: 23,
       backgroundColor: liquidGlassEnabled
         ? 'transparent'
         : isDark
@@ -2437,18 +2659,34 @@ function createStyles(
       shadowOpacity: 0.14,
       shadowRadius: 18,
       shadowOffset: { width: 0, height: 10 },
-      overflow: 'hidden',
     },
-    feedTopMenuButton: {
-      width: 46,
-      height: 46,
+    feedPageTabIndicator: {
+      position: 'absolute',
+      left: FEED_PAGE_TAB_PADDING,
+      top: FEED_PAGE_TAB_PADDING,
+      width: FEED_PAGE_TAB_WIDTH,
+      height: FEED_PAGE_TAB_HEIGHT,
+      borderRadius: FEED_PAGE_TAB_HEIGHT / 2,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.08)',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: isDark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.04)',
+    },
+    feedPageTabButton: {
+      width: FEED_PAGE_TAB_WIDTH,
+      height: FEED_PAGE_TAB_HEIGHT,
+      borderRadius: FEED_PAGE_TAB_HEIGHT / 2,
       alignItems: 'center',
       justifyContent: 'center',
+      zIndex: 1,
     },
-    feedTopMenuDivider: {
-      width: StyleSheet.hairlineWidth,
-      height: 22,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.12)',
+    feedTabText: {
+      color: colors.secondaryText,
+      fontSize: 14,
+      lineHeight: 18,
+      fontWeight: '600',
+    },
+    feedTabTextActive: {
+      color: colors.text,
     },
     sidebarUnderlay: {
       position: 'absolute',
@@ -2615,9 +2853,9 @@ function createStyles(
       zIndex: 2,
     },
     feedContent: {
-      paddingTop: 86,
+      paddingTop: 74,
       paddingHorizontal: 18,
-      paddingBottom: Math.max(bottomInset, 18) + 28,
+      paddingBottom: 22,
     },
     feedLoader: {
       marginTop: 28,
@@ -2626,96 +2864,92 @@ function createStyles(
       maxWidth: 560,
       width: '100%',
       alignSelf: 'center',
-      gap: 12,
+      gap: 0,
     },
-    feedCard: {
+    feedItem: {
+      paddingVertical: 24,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: isDark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.10)',
+      gap: 7,
+    },
+    feedItemPersonal: {
+      marginHorizontal: -10,
+      paddingHorizontal: 10,
       borderRadius: 18,
-      padding: 14,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.82)',
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-      gap: 8,
+      borderBottomColor: 'transparent',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.035)',
+    },
+    feedItemPressed: {
+      opacity: 0.68,
     },
     feedCardImage: {
       width: '100%',
       height: 168,
-      borderRadius: 13,
+      borderRadius: 10,
       backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
       marginBottom: 4,
     },
-    feedCardTop: {
+    feedDate: {
+      color: colors.secondaryText,
+      fontSize: 15,
+      lineHeight: 21,
+      fontWeight: '400',
+    },
+    feedDateRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: 10,
+      gap: 8,
     },
-    feedCategory: {
-      color: colors.secondaryText,
-      fontSize: 12,
-      lineHeight: 16,
-      fontWeight: '700',
-      textTransform: 'uppercase',
-      letterSpacing: 0,
-    },
-    feedDate: {
+    feedDatePersonal: {
       color: colors.text,
-      fontSize: 13,
-      lineHeight: 17,
+    },
+    feedPersonalPill: {
+      overflow: 'hidden',
+      borderRadius: 9,
+      paddingHorizontal: 7,
+      paddingVertical: 2,
+      color: colors.text,
+      fontSize: 11,
+      lineHeight: 14,
       fontWeight: '700',
-      flexShrink: 0,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.07)',
     },
     feedCardTitle: {
       color: colors.text,
-      fontSize: 21,
-      lineHeight: 26,
-      fontWeight: '800',
+      fontSize: 20,
+      lineHeight: 25,
+      fontWeight: '600',
       letterSpacing: 0,
+    },
+    feedCardTitlePersonal: {
+      fontWeight: '700',
     },
     feedMeta: {
       color: colors.secondaryText,
-      fontSize: 14,
-      lineHeight: 20,
+      fontSize: 15,
+      lineHeight: 21,
     },
     feedSummary: {
       color: colors.text,
-      fontSize: 15,
-      lineHeight: 22,
-    },
-    feedReason: {
-      color: colors.secondaryText,
-      fontSize: 13,
-      lineHeight: 19,
+      fontSize: 16,
+      lineHeight: 23,
     },
     feedActions: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 8,
-      paddingTop: 4,
+      gap: 10,
+      paddingTop: 8,
     },
     feedActionButton: {
-      width: 38,
-      height: 38,
-      borderRadius: 19,
+      width: 40,
+      height: 40,
+      borderRadius: 20,
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+      backgroundColor: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.045)',
     },
     feedActionButtonActive: {
       backgroundColor: colors.action,
-    },
-    feedOpenButton: {
-      height: 38,
-      borderRadius: 19,
-      paddingHorizontal: 14,
-      alignItems: 'center',
-      justifyContent: 'center',
-      marginLeft: 'auto',
-      backgroundColor: colors.action,
-    },
-    feedOpenButtonText: {
-      color: colors.actionText,
-      fontSize: 13,
-      fontWeight: '800',
     },
     feedEmpty: {
       maxWidth: 560,
@@ -2945,6 +3179,11 @@ function createStyles(
       color: colors.actionText,
       fontSize: 15,
       fontWeight: '800',
+    },
+    newFeedEventTextInput: {
+      minHeight: 92,
+      paddingTop: 13,
+      textAlignVertical: 'top',
     },
     mediaSheetAction: {
       height: 50,

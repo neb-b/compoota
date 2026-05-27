@@ -176,6 +176,7 @@ export async function runHermesCommand(
     const prompt = imageCommands.length > 0 ? `${imageCommands.join("\n")}\n\n${text}` : text;
     const child = spawn(config.hermesPythonPath, ["-m", "hermes_cli.main", "-z", prompt], {
       cwd: config.hermesWorkingDirectory,
+      detached: true,
       env: {
         ...process.env,
         COMPOOTA_PROGRESS_FILE: progressFile,
@@ -194,7 +195,22 @@ export async function runHermesCommand(
 
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        child.kill("SIGTERM");
+        if (child.pid) {
+          try {
+            process.kill(-child.pid, "SIGTERM");
+          } catch {
+            child.kill("SIGTERM");
+          }
+          setTimeout(() => {
+            try {
+              process.kill(-(child.pid as number), "SIGKILL");
+            } catch {
+              child.kill("SIGKILL");
+            }
+          }, 5_000).unref();
+        } else {
+          child.kill("SIGTERM");
+        }
         reject(new Error(`Local agent timed out after ${config.hermesTimeoutSeconds}s`));
       }, config.hermesTimeoutSeconds * 1000);
 

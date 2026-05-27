@@ -80,12 +80,18 @@ export type FeedRefreshBusyResult = {
   runningRuns: FeedRefreshResponse["run"][];
 };
 
+export type ManualFeedItemInput = {
+  text: string;
+  startsAt: string;
+  endsAt?: string | null;
+};
+
 const hermesFeedItemSchema = z.object({
   title: z.string().trim().min(1).max(180),
   summary: z.string().trim().min(1).max(500),
   category: z.string().trim().min(1).max(80),
-  startsAt: z.string().datetime(),
-  endsAt: z.string().datetime().nullable().optional(),
+  startsAt: z.string().trim().min(1),
+  endsAt: z.string().trim().min(1).nullable().optional(),
   venue: z.string().trim().min(1).max(160),
   area: z.string().trim().min(1).max(160),
   sourceUrl: z.string().trim().url(),
@@ -104,6 +110,39 @@ type HermesFeedItem = z.infer<typeof hermesFeedItemSchema>;
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function parseEventDate(value: string, fieldName: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error(`Hermes returned an invalid ${fieldName}: ${value}`);
+  }
+  return new Date(timestamp).toISOString();
+}
+
+function parseManualEventDate(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error("Enter a valid future date and time.");
+  }
+  if (timestamp <= Date.now()) {
+    throw new Error("Personal events must be in the future.");
+  }
+  return new Date(timestamp).toISOString();
+}
+
+function parseOptionalManualEventDate(value: string | null | undefined, startsAt: string): string | null {
+  if (!value?.trim()) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error("Enter a valid end date and time.");
+  }
+  if (timestamp <= Date.parse(startsAt)) {
+    throw new Error("Event end time must be after the start time.");
+  }
+  return new Date(timestamp).toISOString();
 }
 
 function parseJsonArray(value: string): string[] {
@@ -196,10 +235,11 @@ function normalizeUrl(value: string): string {
 
 function dedupeKey(item: HermesFeedItem): string {
   const normalizedUrl = normalizeUrl(item.sourceUrl);
+  const titleDate = `${item.title.trim().toLowerCase()}:${item.startsAt.slice(0, 10)}`;
   if (normalizedUrl) {
-    return `url:${normalizedUrl}`;
+    return `url:${normalizedUrl}:${titleDate}`;
   }
-  return `fallback:${item.title.trim().toLowerCase()}:${item.startsAt.slice(0, 10)}`;
+  return `fallback:${titleDate}`;
 }
 
 function extractJsonObject(value: string): unknown {
@@ -269,6 +309,37 @@ function mockFeedItems(): HermesFeedItem[] {
   ];
 }
 
+export function seedSampleFeedForAllDevices(
+  db: Database.Database,
+  config: Config
+): FeedRefreshAllResult[] {
+  const devices = db.prepare("SELECT * FROM devices WHERE revoked_at IS NULL").all() as DeviceRow[];
+  return devices.map((device) => {
+    const runId = randomUUID();
+    const startedAt = nowIso();
+    const items = mockFeedItems();
+    db.prepare(
+      "INSERT INTO feed_refresh_runs (id, device_id, status, started_at, finished_at, item_count) VALUES (?, ?, 'done', ?, ?, ?)"
+    ).run(runId, device.id, startedAt, startedAt, persistFeedItems(db, config, device.id, items));
+    const run = db.prepare("SELECT * FROM feed_refresh_runs WHERE id = ?").get(runId) as FeedRefreshRunRow;
+    return {
+      deviceId: device.id,
+      deviceName: device.name,
+      result: {
+        run: runResponse(run),
+        items: listFeedItems(db, device.id)
+      }
+    };
+  });
+}
+
+export function clearRunningFeedRuns(db: Database.Database): number {
+  const result = db
+    .prepare("UPDATE feed_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE status = 'running'")
+    .run(nowIso(), "Manually cleared stale running feed refresh.");
+  return result.changes;
+}
+
 function feedbackSummary(db: Database.Database, deviceId: string): string {
   const rows = db
     .prepare(
@@ -282,24 +353,43 @@ function feedbackSummary(db: Database.Database, deviceId: string): string {
 }
 
 function buildFeedPrompt(preferences: FeedPreferencesResponse, config: Config, db: Database.Database, deviceId: string): string {
+  const maxItems = Math.min(config.feedMaxItems, 20);
+  const today = new Date().toISOString();
+  const horizon = new Date(Date.now() + config.feedLookaheadDays * 24 * 60 * 60 * 1000).toISOString();
   return [
-    "Research nearby things to do and return strict JSON only. Do not include markdown.",
+    "Research nearby things to do and return strict JSON only. Do not include markdown or commentary.",
+    `Current date/time: ${today}. Use this when deciding what is in the future.`,
+    `Research window: from now through ${horizon}, about the next ${config.feedLookaheadDays} days.`,
     `Location: ${preferences.homeLocation}. Radius: ${preferences.radiusMiles} miles.`,
     "Default location is Saline, MI. Prioritize Saline and nearby Ann Arbor/Ypsilanti options.",
     "Visible ordering will be chronological, not algorithmic. Use score only for acquisition quality.",
+    "Find newly announced items anywhere inside the research window. Do not only append later events; items discovered between existing upcoming events should be returned too so the app can slot them chronologically.",
     "Distance rule: farther items need to be more special or worthwhile to score high enough to include.",
-    `Return at most ${config.feedMaxItems} future items with score 0-100.`,
+    `Return 8 to ${maxItems} future items with score 0-100 when enough good items exist. Stop as soon as you have enough good items.`,
+    "Prefer specific upcoming events with dates from official venue, city, chamber, library, university, parks, or event calendar pages.",
+    "Do not attempt exhaustive research. This is a quick daily digest acquisition job.",
     "Include events, music, restaurants, markets, classes, outdoor activities, pop-ups, community happenings, and worthwhile local options.",
-    "JSON shape: {\"items\":[{\"title\":\"...\",\"summary\":\"...\",\"category\":\"...\",\"startsAt\":\"ISO-8601\",\"endsAt\":null,\"venue\":\"...\",\"area\":\"...\",\"sourceUrl\":\"https://...\",\"imageUrl\":null,\"priceText\":null,\"reason\":\"...\",\"score\":80,\"distanceMiles\":5}]}",
+    "JSON shape: {\"items\":[{\"title\":\"...\",\"summary\":\"...\",\"category\":\"...\",\"startsAt\":\"2026-05-24T19:00:00-04:00\",\"endsAt\":null,\"venue\":\"...\",\"area\":\"...\",\"sourceUrl\":\"https://...\",\"imageUrl\":null,\"priceText\":null,\"reason\":\"...\",\"score\":80,\"distanceMiles\":5}]}",
+    "Use full ISO-8601 datetimes for startsAt and endsAt. Include a timezone offset, such as -04:00 for Michigan daylight time. If no exact time is published, use 12:00:00 local time and explain that uncertainty in summary.",
     "Prior feedback:",
     feedbackSummary(db, deviceId)
   ].join("\n");
 }
 
-function parseHermesFeed(reply: string): HermesFeedItem[] {
+function parseHermesFeed(reply: string, config: Config): HermesFeedItem[] {
   const parsed = hermesFeedSchema.parse(extractJsonObject(reply));
   const now = Date.now();
-  return parsed.items.filter((item) => Date.parse(item.startsAt) >= now);
+  const horizon = now + config.feedLookaheadDays * 24 * 60 * 60 * 1000;
+  return parsed.items
+    .map((item) => ({
+      ...item,
+      startsAt: parseEventDate(item.startsAt, "startsAt"),
+      endsAt: item.endsAt ? parseEventDate(item.endsAt, "endsAt") : null
+    }))
+    .filter((item) => {
+      const startsAt = Date.parse(item.startsAt);
+      return startsAt >= now && startsAt <= horizon;
+    });
 }
 
 function feedItemResponse(row: FeedItemRow, feedback: FeedFeedbackValue | null): FeedItemResponse {
@@ -338,6 +428,32 @@ export function listFeedItems(db: Database.Database, deviceId: string): FeedItem
     .all(deviceId, nowIso()) as Array<FeedItemRow & { feedback: FeedFeedbackValue | null }>;
 
   return rows.map((row) => feedItemResponse(row, row.feedback ?? null));
+}
+
+export function createManualFeedItem(
+  db: Database.Database,
+  deviceId: string,
+  input: ManualFeedItemInput
+): FeedItemResponse {
+  const id = randomUUID();
+  const now = nowIso();
+  const startsAt = parseManualEventDate(input.startsAt);
+  const endsAt = parseOptionalManualEventDate(input.endsAt, startsAt);
+  const text = input.text.trim();
+
+  if (!text) {
+    throw new Error("Enter event text.");
+  }
+
+  db.prepare(
+    `INSERT INTO feed_items (
+      id, device_id, dedupe_key, title, summary, category, starts_at, ends_at, venue, area,
+      source_url, image_url, price_text, reason, score, distance_miles, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, '', 'personal', ?, ?, '', 'Personal', ?, NULL, NULL, 'Personal event', 100, NULL, ?, ?)`
+  ).run(id, deviceId, `manual:${id}`, text, startsAt, endsAt, `compoota://personal-event/${id}`, now, now);
+
+  const row = db.prepare("SELECT * FROM feed_items WHERE id = ?").get(id) as FeedItemRow;
+  return feedItemResponse(row, null);
 }
 
 function persistFeedItems(
@@ -418,37 +534,28 @@ export async function refreshFeedForDevice(
   config: Config,
   deviceId: string
 ): Promise<FeedRefreshResponse> {
-  const runId = randomUUID();
-  const startedAt = nowIso();
-  db.prepare(
-    "INSERT INTO feed_refresh_runs (id, device_id, status, started_at, item_count) VALUES (?, ?, 'running', ?, 0)"
-  ).run(runId, deviceId, startedAt);
-
-  try {
-    const preferences = getOrCreateFeedPreferences(db, config, deviceId);
-    const items =
-      config.hermesCommandMode === "mock"
-        ? mockFeedItems()
-        : parseHermesFeed(
-            (await runHermesCommand(buildFeedPrompt(preferences, config, db, deviceId), config, { runId })).reply
-          );
-    const itemCount = persistFeedItems(db, config, deviceId, items);
-    const finishedAt = nowIso();
-    db.prepare(
-      "UPDATE feed_refresh_runs SET status = 'done', finished_at = ?, item_count = ? WHERE id = ?"
-    ).run(finishedAt, itemCount, runId);
-  } catch (error) {
-    const finishedAt = nowIso();
-    db.prepare(
-      "UPDATE feed_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE id = ?"
-    ).run(finishedAt, error instanceof Error ? error.message : "Feed refresh failed", runId);
+  failStaleFeedRuns(db, config);
+  if (schedulerRunning) {
+    const run = latestFeedRun(db, deviceId) ?? runningFeedRuns(db)[0] ?? {
+      id: "busy",
+      status: "running",
+      startedAt: nowIso(),
+      finishedAt: null,
+      itemCount: 0,
+      errorMessage: "A feed refresh is already running."
+    };
+    return {
+      run,
+      items: listFeedItems(db, deviceId)
+    };
   }
 
-  const run = db.prepare("SELECT * FROM feed_refresh_runs WHERE id = ?").get(runId) as FeedRefreshRunRow;
-  return {
-    run: runResponse(run),
-    items: listFeedItems(db, deviceId)
-  };
+  schedulerRunning = true;
+  try {
+    return await refreshFeedForDeviceUnlocked(db, config, deviceId);
+  } finally {
+    schedulerRunning = false;
+  }
 }
 
 export function setFeedFeedback(
@@ -506,6 +613,45 @@ export function failStaleFeedRuns(db: Database.Database, config: Config): number
   return result.changes;
 }
 
+async function refreshFeedForDeviceUnlocked(
+  db: Database.Database,
+  config: Config,
+  deviceId: string
+): Promise<FeedRefreshResponse> {
+  const runId = randomUUID();
+  const startedAt = nowIso();
+  db.prepare(
+    "INSERT INTO feed_refresh_runs (id, device_id, status, started_at, item_count) VALUES (?, ?, 'running', ?, 0)"
+  ).run(runId, deviceId, startedAt);
+
+  try {
+    const preferences = getOrCreateFeedPreferences(db, config, deviceId);
+    const items =
+      config.hermesCommandMode === "mock"
+        ? mockFeedItems()
+        : parseHermesFeed(
+            (await runHermesCommand(buildFeedPrompt(preferences, config, db, deviceId), config, { runId })).reply,
+            config
+          );
+    const itemCount = persistFeedItems(db, config, deviceId, items);
+    const finishedAt = nowIso();
+    db.prepare(
+      "UPDATE feed_refresh_runs SET status = 'done', finished_at = ?, item_count = ? WHERE id = ?"
+    ).run(finishedAt, itemCount, runId);
+  } catch (error) {
+    const finishedAt = nowIso();
+    db.prepare(
+      "UPDATE feed_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE id = ?"
+    ).run(finishedAt, error instanceof Error ? error.message : "Feed refresh failed", runId);
+  }
+
+  const run = db.prepare("SELECT * FROM feed_refresh_runs WHERE id = ?").get(runId) as FeedRefreshRunRow;
+  return {
+    run: runResponse(run),
+    items: listFeedItems(db, deviceId)
+  };
+}
+
 export async function refreshFeedForAllDevices(
   db: Database.Database,
   config: Config
@@ -525,7 +671,7 @@ export async function refreshFeedForAllDevices(
       results.push({
         deviceId: device.id,
         deviceName: device.name,
-        result: await refreshFeedForDevice(db, config, device.id)
+        result: await refreshFeedForDeviceUnlocked(db, config, device.id)
       });
     }
     return results;

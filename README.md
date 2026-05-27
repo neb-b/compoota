@@ -28,6 +28,12 @@ npm install
 npm run dev
 ```
 
+Or from the repo root, with `.env` loaded:
+
+```sh
+./start-local-server.sh
+```
+
 Restart the deployed house-server from the repo root:
 
 ```sh
@@ -141,6 +147,55 @@ docker compose --profile tunnel up -d --build
 ```
 
 The default `.env.example` mirrors `/home/pi/.hermes` into the container at the same path. That keeps Python virtualenvs and other absolute paths boring.
+
+For Mac development, keep Hermes local to the checkout if you want to mirror a fresh Pi install without touching your main `~/.hermes`:
+
+```sh
+python3 -m venv .local/hermes/hermes-agent/venv
+.local/hermes/hermes-agent/venv/bin/python -m pip install --upgrade pip hermes-agent
+mkdir -p .local/hermes/plugins
+cp -R plugins/compoota-progress .local/hermes/plugins/compoota-progress
+```
+
+Then point `.env` at that Hermes home:
+
+```sh
+HERMES_HOME=/Users/you/path/to/compoota/.local/hermes
+HERMES_WORKING_DIRECTORY=/Users/you/path/to/compoota/.local/hermes/hermes-agent
+HERMES_PYTHON_PATH=/Users/you/path/to/compoota/.local/hermes/hermes-agent/venv/bin/python
+```
+
+Hermes still needs a provider before `HERMES_COMMAND_MODE=oneshot` can work:
+
+```sh
+HERMES_HOME=/Users/you/path/to/compoota/.local/hermes .local/hermes/hermes-agent/venv/bin/hermes model
+```
+
+Until then, use `HERMES_COMMAND_MODE=mock` and `./refresh-feed.sh seed` to verify the mobile feed UI.
+
+## Nearby feed setup
+
+The Home screen reads stored feed items with `GET /feed`; pull-to-refresh only reloads from the server. It does not start a Hermes research run.
+
+Setup/admin scripts:
+
+```sh
+./refresh-feed.sh status        # inspect tables, runs, devices, and items
+./refresh-feed.sh seed          # insert deterministic sample cards for paired devices
+./refresh-feed.sh refresh       # trigger the Hermes/mock refresh service
+./refresh-feed.sh clear-running # mark stuck running refreshes as errored
+```
+
+In local Expo development, you can bypass manual pairing by launching with dev-only env vars:
+
+```sh
+EXPO_PUBLIC_COMPOOTA_DEV_SERVER_URL=http://127.0.0.1:8787 \
+EXPO_PUBLIC_COMPOOTA_DEV_DEVICE_ID=... \
+EXPO_PUBLIC_COMPOOTA_DEV_DEVICE_TOKEN=... \
+npm run ios
+```
+
+Those variables are only used in `__DEV__` and only when no saved connection exists.
 
 ## Mobile app setup
 
