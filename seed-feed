@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${repo_dir}"
+
+reset="0"
+refresh="0"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./seed-feed [--reset] [--refresh]
+
+Starts the local house-server service and prints a fresh pairing code. Use
+--reset to delete local dev database/media first for a clean onboarding pass.
+Use --refresh to trigger a real Hermes nearby-events refresh. This never inserts
+fake event cards.
+USAGE
+}
+
+for arg in "$@"; do
+  case "${arg}" in
+    --reset)
+      reset="1"
+      ;;
+    --refresh)
+      refresh="1"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+node_bin="${NODE_BIN:-node}"
+node_major="$("${node_bin}" -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
+if [[ "${node_major}" -lt 20 && -x "/Users/neb/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node" ]]; then
+  node_bin="/Users/neb/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+fi
+
+if [[ -f ".env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
+port="${PORT:-8787}"
+label="${COMPOOTA_LAUNCH_LABEL:-compoota.house-server}"
+
+if [[ "${reset}" == "1" ]]; then
+  launchctl remove "${label}" 2>/dev/null || true
+  pids="$(lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "${pids}" ]]; then
+    kill ${pids} 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      if ! lsof -tiTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.25
+    done
+  fi
+  rm -f .local/house.db .local/house.db-shm .local/house.db-wal
+  rm -rf .local/media
+  mkdir -p .local/media
+fi
+
+NODE_BIN="${node_bin}" ./scripts/start-local-server-service.sh >/dev/null
+
+for _ in $(seq 1 30); do
+  if curl --fail-with-body -sS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+if [[ "${refresh}" == "1" ]]; then
+  echo "== Refreshing real local feed =="
+  ./refresh-feed.sh refresh
+fi
+
+echo
+echo "== Fresh pairing code =="
+./create-pairing-code.sh

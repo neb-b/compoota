@@ -15,6 +15,7 @@
         "NSLocalNetworkUsageDescription": "compoota connects to your local house-server on your LAN.",
         "NSCameraUsageDescription": "compoota uses the camera so you can attach photos for Hermes to analyze.",
         "NSPhotoLibraryUsageDescription": "compoota uses your photo library so you can choose photos for Hermes to analyze.",
+        "NSLocationWhenInUseUsageDescription": "compoota uses your location to set your nearby events area during setup.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         },
@@ -37,6 +38,12 @@
     "plugins": [
       "expo-router",
       "expo-notifications",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "compoota uses your location to set your nearby events area during setup."
+        }
+      ],
       [
         "expo-image-picker",
         {

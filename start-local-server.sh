@@ -14,10 +14,17 @@ set -a
 source .env
 set +a
 
-node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
+node_bin="${NODE_BIN:-node}"
+node_major="$("${node_bin}" -p 'Number(process.versions.node.split(".")[0])')"
 if [[ "${node_major}" -lt 20 ]]; then
-  echo "Node 20+ is required. Current node: $(node --version)" >&2
+  echo "Node 20+ is required. Current node: $("${node_bin}" --version)" >&2
+  echo "Set NODE_BIN=/path/to/node if you have a newer Node outside PATH." >&2
   exit 1
+fi
+
+node_path="$(command -v "${node_bin}" || true)"
+if [[ -n "${node_path}" ]]; then
+  export PATH="$(dirname "${node_path}"):${PATH}"
 fi
 
 cd apps/server

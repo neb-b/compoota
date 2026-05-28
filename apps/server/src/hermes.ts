@@ -20,6 +20,7 @@ type CommandResult = {
 type RunHermesOptions = {
   runId?: string;
   imagePaths?: string[];
+  toolsets?: string[];
   onActivity?: (activity: CommandActivity) => void;
 };
 
@@ -174,7 +175,12 @@ export async function runHermesCommand(
     const stderrChunks: Buffer[] = [];
     const imageCommands = (options.imagePaths ?? []).map((imagePath) => `/image ${imagePath}`);
     const prompt = imageCommands.length > 0 ? `${imageCommands.join("\n")}\n\n${text}` : text;
-    const child = spawn(config.hermesPythonPath, ["-m", "hermes_cli.main", "-z", prompt], {
+    const args = ["-m", "hermes_cli.main"];
+    if (options.toolsets?.length) {
+      args.push("-t", options.toolsets.join(","));
+    }
+    args.push("-z", prompt);
+    const child = spawn(config.hermesPythonPath, args, {
       cwd: config.hermesWorkingDirectory,
       detached: true,
       env: {

@@ -33,7 +33,6 @@ usage() {
 Usage:
   ./refresh-feed.sh              Trigger Hermes feed refresh and show progress
   ./refresh-feed.sh refresh      Same as above
-  ./refresh-feed.sh seed         Insert deterministic sample cards for UI/dev setup
   ./refresh-feed.sh clear-running Mark stuck running refreshes as errored
   ./refresh-feed.sh status       Show current feed status
   ./refresh-feed.sh --logs       Refresh and include recent Docker logs
@@ -90,13 +89,8 @@ echo
 case "${mode}" in
   refresh)
     echo "== Triggering feed refresh =="
-    echo "This calls Hermes in oneshot mode, or deterministic sample data in mock mode."
+    echo "This calls Hermes in oneshot mode and stores only real returned events."
     request POST /setup/feed/refresh | pretty_json
-    ;;
-  seed)
-    echo "== Seeding sample feed cards =="
-    echo "This does not call Hermes. It only inserts deterministic sample cards for UI/dev setup."
-    request POST /setup/feed/seed | pretty_json
     ;;
   clear-running)
     echo "== Clearing stuck running feed refreshes =="

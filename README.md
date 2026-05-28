@@ -2,7 +2,7 @@
 
 ## What this is
 
-compoota is a small companion stack for a local house agent running on a Raspberry Pi. The mobile app talks only to the house-server on your LAN. The house-server can run in mock mode for setup, or call the private local agent when configured on the Pi.
+compoota is a small companion stack for a local house agent running on a Raspberry Pi. The mobile app talks only to the house-server on your LAN. The house-server can run in mock mode for assistant setup, or call the private local agent when configured on the Pi.
 
 The local agent is not exposed publicly.
 
@@ -133,9 +133,47 @@ https://your-house.example.com
 
 Cloudflare Tunnel does not need router port forwarding. It exposes only `house-server`; the local agent stays behind it.
 
-## Local agent progress
+## Local Hermes
 
-The app works in mock mode first. To call the local agent and stream progress:
+compoota is meant to be self-contained: local databases, media, Hermes memory,
+Hermes virtualenvs, and development caches should live under `.local/` whenever
+possible. That keeps Mac development close to the eventual Pi/home-server
+deployment shape without depending on your global `~/.hermes`.
+
+On a Mac or development machine, bootstrap project-local Hermes from the repo
+root:
+
+```sh
+./scripts/setup-local-hermes.sh
+```
+
+That script creates:
+
+- `.local/hermes` as `HERMES_HOME`
+- `.local/hermes/hermes-agent/venv` for the Hermes Python environment
+- `.local/hermes/plugins/compoota-progress`
+- `.env` with repo-local paths when `.env` does not already exist
+
+Use the wrapper when you want to call Hermes by hand:
+
+```sh
+./scripts/hermes-local.sh status
+./scripts/hermes-local.sh memory status
+./scripts/hermes-local.sh -z "hello from compoota"
+```
+
+Hermes still needs a model/provider before `HERMES_COMMAND_MODE=oneshot` can
+work:
+
+```sh
+./scripts/hermes-local.sh model
+```
+
+Until then, set `HERMES_COMMAND_MODE=mock` in `.env` for assistant-only setup.
+Nearby feed refreshes require `HERMES_COMMAND_MODE=oneshot` because the feed
+does not insert fake events.
+
+## Pi Hermes
 
 ```sh
 mkdir -p ~/.hermes/plugins
@@ -148,42 +186,20 @@ docker compose --profile tunnel up -d --build
 
 The default `.env.example` mirrors `/home/pi/.hermes` into the container at the same path. That keeps Python virtualenvs and other absolute paths boring.
 
-For Mac development, keep Hermes local to the checkout if you want to mirror a fresh Pi install without touching your main `~/.hermes`:
-
-```sh
-python3 -m venv .local/hermes/hermes-agent/venv
-.local/hermes/hermes-agent/venv/bin/python -m pip install --upgrade pip hermes-agent
-mkdir -p .local/hermes/plugins
-cp -R plugins/compoota-progress .local/hermes/plugins/compoota-progress
-```
-
-Then point `.env` at that Hermes home:
-
-```sh
-HERMES_HOME=/Users/you/path/to/compoota/.local/hermes
-HERMES_WORKING_DIRECTORY=/Users/you/path/to/compoota/.local/hermes/hermes-agent
-HERMES_PYTHON_PATH=/Users/you/path/to/compoota/.local/hermes/hermes-agent/venv/bin/python
-```
-
-Hermes still needs a provider before `HERMES_COMMAND_MODE=oneshot` can work:
-
-```sh
-HERMES_HOME=/Users/you/path/to/compoota/.local/hermes .local/hermes/hermes-agent/venv/bin/hermes model
-```
-
-Until then, use `HERMES_COMMAND_MODE=mock` and `./refresh-feed.sh seed` to verify the mobile feed UI.
-
 ## Nearby feed setup
 
-The Home screen reads stored feed items with `GET /feed`; pull-to-refresh only reloads from the server. It does not start a Hermes research run.
+The Home screen reads stored feed items with `GET /feed`; pull-to-refresh starts
+a real Hermes nearby-events research run. If no events are stored yet, the app
+shows a loading nearby events state instead of fake cards.
 
 Setup/admin scripts:
 
 ```sh
 ./refresh-feed.sh status        # inspect tables, runs, devices, and items
-./refresh-feed.sh seed          # insert deterministic sample cards for paired devices
-./refresh-feed.sh refresh       # trigger the Hermes/mock refresh service
+./refresh-feed.sh refresh       # trigger the real Hermes refresh service
 ./refresh-feed.sh clear-running # mark stuck running refreshes as errored
+./seed-feed --reset             # reset local DB/media, start server, print pairing code
+./seed-feed --refresh           # start server, then trigger a real Hermes refresh
 ```
 
 In local Expo development, you can bypass manual pairing by launching with dev-only env vars:

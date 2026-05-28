@@ -112,6 +112,9 @@ const hermesFeedSchema = z.object({
 
 type HermesFeedItem = z.infer<typeof hermesFeedItemSchema>;
 
+const UPCOMING_WEEKEND_MIN_ITEMS = 4;
+const WEEKEND_FALLBACK_INCLUSION_THRESHOLD = 35;
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -257,83 +260,6 @@ function extractJsonObject(value: string): unknown {
   }
 }
 
-function mockFeedItems(): HermesFeedItem[] {
-  const base = new Date();
-  base.setHours(10, 0, 0, 0);
-  const day = 24 * 60 * 60 * 1000;
-  return [
-    {
-      title: "Saline Farmers Market",
-      summary: "Local produce, baked goods, flowers, and seasonal pantry finds downtown.",
-      category: "market",
-      startsAt: new Date(base.getTime() + day).toISOString(),
-      endsAt: new Date(base.getTime() + day + 3 * 60 * 60 * 1000).toISOString(),
-      venue: "Downtown Saline",
-      area: "Saline",
-      sourceUrl: "https://www.cityofsaline.org/",
-      imageUrl: null,
-      priceText: "Free",
-      reason: "Easy nearby morning option with fresh local vendors.",
-      score: 88,
-      distanceMiles: 1
-    },
-    {
-      title: "Live music night in Ann Arbor",
-      summary: "A low-key evening show close enough for a spontaneous weeknight plan.",
-      category: "music",
-      startsAt: new Date(base.getTime() + 2 * day + 9 * 60 * 60 * 1000).toISOString(),
-      endsAt: null,
-      venue: "Downtown Ann Arbor",
-      area: "Ann Arbor",
-      sourceUrl: "https://www.annarbor.org/events/",
-      imageUrl: null,
-      priceText: "$",
-      reason: "Farther than Saline but worthwhile if you want an evening out.",
-      score: 78,
-      distanceMiles: 11
-    },
-    {
-      title: "Weekend trail walk at Curtiss Park",
-      summary: "A simple outdoor reset with open green space and walking paths.",
-      category: "outdoors",
-      startsAt: new Date(base.getTime() + 3 * day).toISOString(),
-      endsAt: null,
-      venue: "Curtiss Park",
-      area: "Saline",
-      sourceUrl: "https://www.cityofsaline.org/",
-      imageUrl: null,
-      priceText: "Free",
-      reason: "Close, low-friction, and good for a daily check-in feed.",
-      score: 72,
-      distanceMiles: 2
-    }
-  ];
-}
-
-export function seedSampleFeedForAllDevices(
-  db: Database.Database,
-  config: Config
-): FeedRefreshAllResult[] {
-  const households = db.prepare("SELECT * FROM households ORDER BY created_at ASC").all() as HouseholdRow[];
-  return households.map((household) => {
-    const runId = randomUUID();
-    const startedAt = nowIso();
-    const items = mockFeedItems();
-    db.prepare(
-      "INSERT INTO event_refresh_runs (id, household_id, status, started_at, finished_at, item_count) VALUES (?, ?, 'done', ?, ?, ?)"
-    ).run(runId, household.id, startedAt, startedAt, persistFeedItems(db, config, household.id, items));
-    const run = db.prepare("SELECT * FROM event_refresh_runs WHERE id = ?").get(runId) as FeedRefreshRunRow;
-    return {
-      householdId: household.id,
-      householdName: household.name,
-      result: {
-        run: runResponse(run),
-        items: listFeedItems(db, household.id)
-      }
-    };
-  });
-}
-
 export function clearRunningFeedRuns(db: Database.Database): number {
   const result = db
     .prepare("UPDATE event_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE status = 'running'")
@@ -353,23 +279,56 @@ function feedbackSummary(db: Database.Database, householdId: string): string {
   return rows.map((row) => `- ${row.value}: ${row.title} (${row.category})`).join("\n");
 }
 
+function upcomingWeekendWindow(now = new Date()): { startsAt: Date; endsAt: Date } {
+  const startsAt = new Date(now);
+  const day = startsAt.getDay();
+  const daysUntilFriday = (5 - day + 7) % 7;
+  startsAt.setDate(startsAt.getDate() + daysUntilFriday);
+  startsAt.setHours(17, 0, 0, 0);
+
+  const endsAt = new Date(startsAt);
+  endsAt.setDate(endsAt.getDate() + 2);
+  endsAt.setHours(23, 59, 59, 999);
+
+  if (now > endsAt) {
+    startsAt.setDate(startsAt.getDate() + 7);
+    endsAt.setDate(endsAt.getDate() + 7);
+  }
+
+  return { startsAt, endsAt };
+}
+
+function isInUpcomingWeekend(item: HermesFeedItem, now = new Date()): boolean {
+  const startsAt = Date.parse(item.startsAt);
+  if (!Number.isFinite(startsAt)) {
+    return false;
+  }
+
+  const window = upcomingWeekendWindow(now);
+  return startsAt >= window.startsAt.getTime() && startsAt <= window.endsAt.getTime();
+}
+
 function buildFeedPrompt(preferences: FeedPreferencesResponse, config: Config, db: Database.Database, householdId: string): string {
   const maxItems = Math.min(config.feedMaxItems, 20);
   const today = new Date().toISOString();
   const horizon = new Date(Date.now() + config.feedLookaheadDays * 24 * 60 * 60 * 1000).toISOString();
+  const weekend = upcomingWeekendWindow();
   return [
     "Research nearby things to do and return strict JSON only. Do not include markdown or commentary.",
     `Current date/time: ${today}. Use this when deciding what is in the future.`,
     `Research window: from now through ${horizon}, about the next ${config.feedLookaheadDays} days.`,
+    `Upcoming weekend focus: include at least ${UPCOMING_WEEKEND_MIN_ITEMS} real options between ${weekend.startsAt.toISOString()} and ${weekend.endsAt.toISOString()} when any worthwhile local options exist.`,
     `Location: ${preferences.homeLocation}. Radius: ${preferences.radiusMiles} miles.`,
     "Default location is Saline, MI. Prioritize Saline and nearby Ann Arbor/Ypsilanti options.",
     "Visible ordering will be chronological, not algorithmic. Use score only for acquisition quality.",
     "Find newly announced items anywhere inside the research window. Do not only append later events; items discovered between existing upcoming events should be returned too so the app can slot them chronologically.",
     "Distance rule: farther items need to be more special or worthwhile to score high enough to include.",
-    `Return 8 to ${maxItems} future items with score 0-100 when enough good items exist. Stop as soon as you have enough good items.`,
+    `Return 12 to ${maxItems} future items with score 0-100 when enough good items exist. Stop as soon as you have enough good items.`,
     "Prefer specific upcoming events with dates from official venue, city, chamber, library, university, parks, or event calendar pages.",
+    "For the upcoming weekend, include smaller but concrete options such as library programs, park events, markets, live music, classes, community calendars, and seasonal venue happenings. A weekend with no options should be rare.",
     "Do not attempt exhaustive research. This is a quick daily digest acquisition job.",
     "Include events, music, restaurants, markets, classes, outdoor activities, pop-ups, community happenings, and worthwhile local options.",
+    "Treat prior save/like feedback as positive taste signal, dislike/hide feedback as negative taste signal, and still preserve variety.",
     "JSON shape: {\"items\":[{\"title\":\"...\",\"summary\":\"...\",\"category\":\"...\",\"startsAt\":\"2026-05-24T19:00:00-04:00\",\"endsAt\":null,\"venue\":\"...\",\"area\":\"...\",\"sourceUrl\":\"https://...\",\"imageUrl\":null,\"priceText\":null,\"reason\":\"...\",\"score\":80,\"distanceMiles\":5}]}",
     "Use full ISO-8601 datetimes for startsAt and endsAt. Include a timezone offset, such as -04:00 for Michigan daylight time. If no exact time is published, use 12:00:00 local time and explain that uncertainty in summary.",
     "Prior household feedback:",
@@ -503,8 +462,23 @@ function persistFeedItems(
   householdId: string,
   items: HermesFeedItem[]
 ): number {
-  const accepted = items
-    .filter((item) => item.score >= config.feedInclusionThreshold)
+  const accepted = items.filter((item) => item.score >= config.feedInclusionThreshold);
+  const acceptedKeys = new Set(accepted.map(dedupeKey));
+  const acceptedWeekendCount = accepted.filter((item) => isInUpcomingWeekend(item)).length;
+  const weekendFillers =
+    acceptedWeekendCount >= UPCOMING_WEEKEND_MIN_ITEMS
+      ? []
+      : items
+          .filter((item) => {
+            if (item.score < WEEKEND_FALLBACK_INCLUSION_THRESHOLD || !isInUpcomingWeekend(item)) {
+              return false;
+            }
+            return !acceptedKeys.has(dedupeKey(item));
+          })
+          .sort((left, right) => right.score - left.score)
+          .slice(0, UPCOMING_WEEKEND_MIN_ITEMS - acceptedWeekendCount);
+  const finalItems = [...accepted, ...weekendFillers]
+    .sort((left, right) => Date.parse(left.startsAt) - Date.parse(right.startsAt))
     .slice(0, config.feedMaxItems);
   const now = nowIso();
 
@@ -532,7 +506,7 @@ function persistFeedItems(
   );
 
   const transaction = db.transaction(() => {
-    for (const item of accepted) {
+    for (const item of finalItems) {
       upsert.run(
         randomUUID(),
         householdId,
@@ -557,7 +531,7 @@ function persistFeedItems(
   });
   transaction();
 
-  return accepted.length;
+  return finalItems.length;
 }
 
 function runResponse(row: FeedRefreshRunRow): FeedRefreshResponse["run"] {
@@ -628,6 +602,44 @@ export function setFeedFeedback(
   return feedItemResponse(item, value);
 }
 
+export async function rememberFeedFeedbackInHermes(
+  db: Database.Database,
+  config: Config,
+  householdId: string,
+  itemId: string,
+  value: FeedFeedbackInput
+): Promise<void> {
+  if (config.hermesCommandMode !== "oneshot" || value === "clear") {
+    return;
+  }
+
+  const item = db
+    .prepare("SELECT * FROM events WHERE id = ? AND household_id = ?")
+    .get(itemId, householdId) as FeedItemRow | undefined;
+  if (!item) {
+    return;
+  }
+
+  const sentiment = value === "like" || value === "save" ? "positive" : "negative";
+  const prompt = [
+    "Update durable household memory from this event-feed feedback. Do not research anything.",
+    "Record this as a taste/preference signal for future nearby event recommendations.",
+    `Feedback value: ${value}. Sentiment: ${sentiment}.`,
+    `Event title: ${item.title}`,
+    `Category: ${item.category}`,
+    `Venue: ${item.venue}`,
+    `Area: ${item.area}`,
+    `Summary: ${item.summary}`,
+    `Reason previously shown: ${item.reason}`,
+    "Prefer generalized taste memory over memorizing one-off event IDs. Reply only OK."
+  ].join("\n");
+
+  await runHermesCommand(prompt, config, {
+    runId: `feed-feedback-${itemId}-${Date.now()}`,
+    toolsets: ["memory"]
+  });
+}
+
 export function latestFeedRun(db: Database.Database, householdId: string): FeedRefreshResponse["run"] | null {
   const run = db
     .prepare("SELECT * FROM event_refresh_runs WHERE household_id = ? ORDER BY started_at DESC LIMIT 1")
@@ -668,13 +680,13 @@ async function refreshFeedForDeviceUnlocked(
 
   try {
     const preferences = getOrCreateFeedPreferences(db, config, householdId);
-    const items =
-      config.hermesCommandMode === "mock"
-        ? mockFeedItems()
-        : parseHermesFeed(
-            (await runHermesCommand(buildFeedPrompt(preferences, config, db, householdId), config, { runId })).reply,
-            config
-          );
+    if (config.hermesCommandMode !== "oneshot") {
+      throw new Error("Real event refresh requires HERMES_COMMAND_MODE=oneshot.");
+    }
+    const items = parseHermesFeed(
+      (await runHermesCommand(buildFeedPrompt(preferences, config, db, householdId), config, { runId })).reply,
+      config
+    );
     const itemCount = persistFeedItems(db, config, householdId, items);
     const finishedAt = nowIso();
     db.prepare(

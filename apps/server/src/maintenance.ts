@@ -125,6 +125,26 @@ export function createMaintenanceTask(
     : null;
   const nextDueAt = parseOptionalFutureDate(input.nextDueAt ?? null);
   const now = nowIso();
+  const existing = db
+    .prepare(
+      "SELECT * FROM maintenance_tasks WHERE household_id = ? AND status = 'active' AND lower(title) = lower(?) ORDER BY created_at ASC LIMIT 1"
+    )
+    .get(householdId, title) as MaintenanceTaskRow | undefined;
+
+  if (existing) {
+    db.prepare(
+      "UPDATE reminders SET status = 'canceled', updated_at = ? WHERE household_id = ? AND source_type = 'maintenance' AND source_id = ? AND status = 'pending'"
+    ).run(now, householdId, existing.id);
+    db.prepare(
+      "UPDATE maintenance_tasks SET cadence_days = ?, next_due_at = ?, notes = ?, updated_at = ? WHERE id = ?"
+    ).run(cadenceDays, nextDueAt, input.notes?.trim() ?? existing.notes, now, existing.id);
+    if (nextDueAt) {
+      scheduleMaintenanceReminder(db, householdId, existing.id, title, nextDueAt);
+    }
+    const row = db.prepare("SELECT * FROM maintenance_tasks WHERE id = ?").get(existing.id) as MaintenanceTaskRow;
+    return taskResponse(row);
+  }
+
   const id = randomUUID();
 
   db.prepare(
@@ -158,6 +178,7 @@ export function completeMaintenanceTask(
   const nextDueAt = task.cadence_days
     ? new Date(Date.parse(completedAt) + task.cadence_days * 24 * 60 * 60 * 1000).toISOString()
     : null;
+  const nextStatus = task.cadence_days ? "active" : "completed";
   const now = nowIso();
 
   db.prepare(
@@ -167,8 +188,8 @@ export function completeMaintenanceTask(
     "UPDATE reminders SET status = 'canceled', updated_at = ? WHERE household_id = ? AND source_type = 'maintenance' AND source_id = ? AND status = 'pending'"
   ).run(now, householdId, taskId);
   db.prepare(
-    "UPDATE maintenance_tasks SET last_completed_at = ?, next_due_at = ?, updated_at = ? WHERE id = ?"
-  ).run(completedAt, nextDueAt, now, taskId);
+    "UPDATE maintenance_tasks SET last_completed_at = ?, next_due_at = ?, status = ?, updated_at = ? WHERE id = ?"
+  ).run(completedAt, nextDueAt, nextStatus, now, taskId);
 
   if (nextDueAt) {
     scheduleMaintenanceReminder(db, householdId, taskId, task.title, nextDueAt);

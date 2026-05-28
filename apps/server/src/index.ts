@@ -17,9 +17,9 @@ import {
   failStaleFeedRuns,
   latestFeedRun,
   listFeedItems,
+  rememberFeedFeedbackInHermes,
   refreshFeedForAllDevices,
   refreshFeedForDevice,
-  seedSampleFeedForAllDevices,
   setFeedFeedback,
   startFeedScheduler,
   updateFeedPreferences
@@ -471,6 +471,15 @@ function createServer(config: Config, db: Database.Database) {
     const items = db
       .prepare("SELECT title, starts_at, area, score, created_at FROM events ORDER BY starts_at ASC LIMIT 10")
       .all() as Array<Record<string, unknown>>;
+    const feedback = db
+      .prepare(
+        `SELECT e.title, e.category, e.starts_at, ef.value, ef.updated_at
+         FROM event_feedback ef
+         JOIN events e ON e.id = ef.event_id
+         ORDER BY ef.updated_at DESC
+         LIMIT 20`
+      )
+      .all() as Array<Record<string, unknown>>;
     const reminders = db
       .prepare("SELECT source_type, title, remind_at, status FROM reminders ORDER BY remind_at ASC LIMIT 10")
       .all() as Array<Record<string, unknown>>;
@@ -493,6 +502,7 @@ function createServer(config: Config, db: Database.Database) {
       devices,
       runs,
       items,
+      feedback,
       reminders,
       deliveries
     };
@@ -501,18 +511,6 @@ function createServer(config: Config, db: Database.Database) {
   app.post("/setup/feed/refresh", async (request) => {
     verifySetupSecret(request, config);
     const results = await refreshFeedForAllDevices(db, config);
-    return {
-      results,
-      status: {
-        runs: db.prepare("SELECT * FROM event_refresh_runs ORDER BY started_at DESC LIMIT 10").all(),
-        items: db.prepare("SELECT title, starts_at, area, score, created_at FROM events ORDER BY starts_at ASC LIMIT 10").all()
-      }
-    };
-  });
-
-  app.post("/setup/feed/seed", async (request) => {
-    verifySetupSecret(request, config);
-    const results = seedSampleFeedForAllDevices(db, config);
     return {
       results,
       status: {
@@ -642,6 +640,9 @@ function createServer(config: Config, db: Database.Database) {
       reply.status(404).send({ error: "Feed item not found" });
       return;
     }
+    rememberFeedFeedbackInHermes(db, config, device.household_id, params.id, body.value).catch((error) => {
+      app.log.warn({ error, itemId: params.id }, "Feed feedback Hermes memory update failed");
+    });
 
     return { item };
   });
@@ -655,6 +656,9 @@ function createServer(config: Config, db: Database.Database) {
       reply.status(404).send({ error: "Event not found" });
       return;
     }
+    rememberFeedFeedbackInHermes(db, config, device.household_id, params.id, body.value).catch((error) => {
+      app.log.warn({ error, itemId: params.id }, "Event feedback Hermes memory update failed");
+    });
 
     return { item };
   });

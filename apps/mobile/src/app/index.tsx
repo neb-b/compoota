@@ -4,6 +4,7 @@ import Constants from 'expo-constants'
 import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect'
 import * as ImagePicker from 'expo-image-picker'
 import { LinearGradient } from 'expo-linear-gradient'
+import * as Location from 'expo-location'
 import * as Notifications from 'expo-notifications'
 import { SymbolView, type SFSymbol } from 'expo-symbols'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -50,6 +51,7 @@ type Connection = {
 type ConnectionPreferences = {
   serverUrl: string
   deviceName: string
+  homeLocation?: string
 }
 
 type ActivityStep = {
@@ -167,6 +169,11 @@ const DEV_SERVER_URL = process.env.EXPO_PUBLIC_COMPOOTA_DEV_SERVER_URL
 const DEV_DEVICE_ID = process.env.EXPO_PUBLIC_COMPOOTA_DEV_DEVICE_ID
 const DEV_DEVICE_TOKEN = process.env.EXPO_PUBLIC_COMPOOTA_DEV_DEVICE_TOKEN
 const DEV_DEVICE_NAME = process.env.EXPO_PUBLIC_COMPOOTA_DEV_DEVICE_NAME ?? 'Local Simulator'
+const CLOUDFLARE_SERVER_URL = process.env.EXPO_PUBLIC_COMPOOTA_CLOUDFLARE_URL
+const LOCAL_SERVER_URL = Platform.select({
+  android: 'http://10.0.2.2:8787',
+  default: 'http://127.0.0.1:8787',
+})
 const MESSAGE_HISTORY_KEY_PREFIX = 'compoota.messages.v1.'
 const SIDEBAR_EDGE_HIT_SLOP = 30
 const SIDEBAR_LAYER_RADIUS = 58
@@ -276,6 +283,22 @@ function normalizeServerUrl(value: string): string {
   }
 
   return url.toString().replace(/\/+$/, '')
+}
+
+function defaultServerUrl(): string {
+  return DEV_SERVER_URL || LOCAL_SERVER_URL
+}
+
+function formatPlacemarkLocation(placemark: Location.LocationGeocodedAddress): string | null {
+  const city = placemark.city || placemark.district || placemark.subregion
+  const region = placemark.region
+  if (city && region) {
+    return `${city}, ${region}`
+  }
+  if (city) {
+    return city
+  }
+  return region || placemark.country || null
 }
 
 async function readError(response: Response): Promise<string> {
@@ -406,9 +429,7 @@ function mediaImageSource(media: MessageMedia): ImageSourcePropType {
   return { uri: media.remoteUrl }
 }
 
-function parseMediaItems(
-  value: unknown,
-): MessageMedia[] {
+function parseMediaItems(value: unknown): MessageMedia[] {
   if (!Array.isArray(value)) {
     return []
   }
@@ -622,9 +643,7 @@ async function registerForPushToken(): Promise<string | null> {
       return null
     }
 
-    const projectId =
-      Constants.expoConfig?.extra?.eas?.projectId ??
-      Constants.easConfig?.projectId
+    const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId
     const token = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)
     return token.data
   } catch {
@@ -667,6 +686,25 @@ function formatMaintenanceDate(value: string | null): string {
     day: 'numeric',
     year: 'numeric',
   }).format(date)
+}
+
+function formatMaintenanceCadence(days: number | null): string | null {
+  if (!days) {
+    return null
+  }
+  if (days % 365 === 0) {
+    const years = days / 365
+    return `every ${years} ${years === 1 ? 'year' : 'years'}`
+  }
+  if (days % 30 === 0) {
+    const months = days / 30
+    return `every ${months} ${months === 1 ? 'month' : 'months'}`
+  }
+  if (days % 7 === 0) {
+    const weeks = days / 7
+    return `every ${weeks} ${weeks === 1 ? 'week' : 'weeks'}`
+  }
+  return `every ${days} days`
 }
 
 function combineEventDateTime(dateValue: Date, timeValue: Date, includesTime: boolean): string {
@@ -812,6 +850,8 @@ export default function HomeScreen() {
   const [serverUrl, setServerUrl] = useState('')
   const [pairingCode, setPairingCode] = useState('')
   const [deviceName, setDeviceName] = useState('')
+  const [onboardingLocation, setOnboardingLocation] = useState('')
+  const [locating, setLocating] = useState(false)
   const [command, setCommand] = useState('')
   const [pendingMedia, setPendingMedia] = useState<PendingMedia[]>([])
   const [mediaSheetVisible, setMediaSheetVisible] = useState(false)
@@ -823,6 +863,7 @@ export default function HomeScreen() {
   const [feedUndo, setFeedUndo] = useState<FeedUndoState | null>(null)
   const [feedLoading, setFeedLoading] = useState(false)
   const [feedRefreshing, setFeedRefreshing] = useState(false)
+  const [feedAutoRefreshAttempted, setFeedAutoRefreshAttempted] = useState(false)
   const [feedError, setFeedError] = useState('')
   const [feedSettingsVisible, setFeedSettingsVisible] = useState(false)
   const [newFeedEventVisible, setNewFeedEventVisible] = useState(false)
@@ -864,10 +905,7 @@ export default function HomeScreen() {
         accessibilityLabel="Add photo"
         disabled={busy}
         onPress={() => setMediaSheetVisible(true)}
-        style={({ pressed }) => [
-          styles.attachButtonHitbox,
-          (pressed || busy) && styles.glassPressed,
-        ]}
+        style={({ pressed }) => [styles.attachButtonHitbox, (pressed || busy) && styles.glassPressed]}
       >
         <GlassSurface
           colorScheme={isDark ? 'dark' : 'light'}
@@ -1647,6 +1685,11 @@ export default function HomeScreen() {
           if (parsedPreferences.deviceName) {
             setDeviceName(parsedPreferences.deviceName)
           }
+          if (parsedPreferences.homeLocation) {
+            setOnboardingLocation(parsedPreferences.homeLocation)
+          }
+        } else if (__DEV__) {
+          setServerUrl(defaultServerUrl())
         }
 
         if (stored) {
@@ -1670,6 +1713,7 @@ export default function HomeScreen() {
           const nextPreferences = {
             serverUrl: nextConnection.serverUrl,
             deviceName: DEV_DEVICE_NAME,
+            homeLocation: onboardingLocation,
           }
 
           await Promise.all([
@@ -1712,6 +1756,30 @@ export default function HomeScreen() {
   }, [activeScreen, loadFeed])
 
   useEffect(() => {
+    if (
+      activeScreen !== 'home' ||
+      !connection ||
+      feedAutoRefreshAttempted ||
+      feedLoading ||
+      feedRefreshing ||
+      feedItems.length > 0
+    ) {
+      return
+    }
+
+    setFeedAutoRefreshAttempted(true)
+    refreshFeed()
+  }, [
+    activeScreen,
+    connection,
+    feedAutoRefreshAttempted,
+    feedItems.length,
+    feedLoading,
+    feedRefreshing,
+    refreshFeed,
+  ])
+
+  useEffect(() => {
     if (activeScreen === 'media') {
       loadMediaLibrary()
     }
@@ -1726,6 +1794,33 @@ export default function HomeScreen() {
   useEffect(() => {
     updatePushToken()
   }, [updatePushToken])
+
+  async function useCurrentLocation() {
+    setError('')
+    setLocating(true)
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync()
+      if (permission.status !== 'granted') {
+        throw new Error('Location permission is needed to set your nearby area.')
+      }
+
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      })
+      const [placemark] = await Location.reverseGeocodeAsync(position.coords)
+      const nextLocation = placemark ? formatPlacemarkLocation(placemark) : null
+      if (!nextLocation) {
+        throw new Error('Could not identify your city from this location.')
+      }
+
+      setOnboardingLocation(nextLocation)
+      setFeedLocationDraft(nextLocation)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Location could not be detected.')
+    } finally {
+      setLocating(false)
+    }
+  }
 
   async function connect() {
     setError('')
@@ -1775,6 +1870,30 @@ export default function HomeScreen() {
       const nextPreferences = {
         serverUrl: normalizedUrl,
         deviceName: cleanedName,
+        homeLocation: onboardingLocation.trim(),
+      }
+      let initialFeedPreferences: FeedPreferences | null = null
+
+      if (onboardingLocation.trim()) {
+        const preferencesResponse = await fetchWithTimeout(
+          `${normalizedUrl}/feed/preferences`,
+          {
+            method: 'PUT',
+            headers: {
+              Authorization: `Bearer ${nextConnection.deviceToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              homeLocation: onboardingLocation.trim(),
+              radiusMiles: 30,
+            }),
+          },
+          12000,
+        )
+        if (!preferencesResponse.ok) {
+          throw new Error(await readError(preferencesResponse))
+        }
+        initialFeedPreferences = parseFeedPreferences(await preferencesResponse.json())
       }
 
       await Promise.all([
@@ -1787,8 +1906,9 @@ export default function HomeScreen() {
       setDeviceName(cleanedName)
       setMessages([])
       setFeedItems([])
-      setFeedPreferences(null)
+      setFeedPreferences(initialFeedPreferences)
       setFeedRun(null)
+      setFeedAutoRefreshAttempted(false)
       setMediaLibrary([])
       setMaintenanceTasks([])
       setActiveScreen('home')
@@ -1996,6 +2116,7 @@ export default function HomeScreen() {
     setSelectedActivityMessageId(null)
     setMessages([])
     setActiveScreen('assistant')
+    setFeedAutoRefreshAttempted(false)
     scrollRef.current?.scrollTo({ y: 0, animated: true })
   }
 
@@ -2018,11 +2139,53 @@ export default function HomeScreen() {
             <View style={styles.connectContent}>
               <Text style={styles.connectTitle}>compoota</Text>
               <Text style={styles.connectCopy}>
-                enter your server url and a fresh pairing code from your pi
+                choose a house-server, then enter a fresh pairing code
               </Text>
             </View>
 
             <View style={styles.connectForm}>
+              <View style={styles.connectionTargets}>
+                <Pressable
+                  accessibilityLabel="Use local Mac server"
+                  onPress={() => setServerUrl(LOCAL_SERVER_URL)}
+                  style={({ pressed }) => [
+                    styles.connectionTargetButton,
+                    serverUrl.trim() === LOCAL_SERVER_URL && styles.connectionTargetButtonActive,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.connectionTargetText,
+                      serverUrl.trim() === LOCAL_SERVER_URL && styles.connectionTargetTextActive,
+                    ]}
+                  >
+                    Mac local
+                  </Text>
+                </Pressable>
+                {CLOUDFLARE_SERVER_URL ? (
+                  <Pressable
+                    accessibilityLabel="Use Cloudflare tunnel"
+                    onPress={() => setServerUrl(CLOUDFLARE_SERVER_URL)}
+                    style={({ pressed }) => [
+                      styles.connectionTargetButton,
+                      serverUrl.trim() === CLOUDFLARE_SERVER_URL && styles.connectionTargetButtonActive,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.connectionTargetText,
+                        serverUrl.trim() === CLOUDFLARE_SERVER_URL &&
+                          styles.connectionTargetTextActive,
+                      ]}
+                    >
+                      Cloudflare
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+
               <View style={styles.field}>
                 <Text style={styles.label}>server url</Text>
                 <TextInput
@@ -2030,7 +2193,7 @@ export default function HomeScreen() {
                   autoCorrect={false}
                   keyboardType="url"
                   onChangeText={setServerUrl}
-                  placeholder="http://192.168.1.50:8787"
+                  placeholder={LOCAL_SERVER_URL}
                   placeholderTextColor={colors.placeholder}
                   style={styles.input}
                   value={serverUrl}
@@ -2048,6 +2211,36 @@ export default function HomeScreen() {
                   style={[styles.input, styles.codeInput]}
                   value={pairingCode}
                 />
+              </View>
+
+              <View style={styles.field}>
+                <Text style={styles.label}>nearby area</Text>
+                <View style={styles.locationRow}>
+                  <TextInput
+                    autoCapitalize="words"
+                    autoCorrect={false}
+                    onChangeText={setOnboardingLocation}
+                    placeholder="Ann Arbor, MI"
+                    placeholderTextColor={colors.placeholder}
+                    style={[styles.input, styles.locationInput]}
+                    value={onboardingLocation}
+                  />
+                  <Pressable
+                    accessibilityLabel="Use current location"
+                    disabled={locating}
+                    onPress={useCurrentLocation}
+                    style={({ pressed }) => [
+                      styles.locationButton,
+                      (pressed || locating) && styles.pressed,
+                    ]}
+                  >
+                    {locating ? (
+                      <ActivityIndicator color={colors.actionText} />
+                    ) : (
+                      <AppleIcon color={colors.actionText} name="location" size={18} />
+                    )}
+                  </Pressable>
+                </View>
               </View>
 
               <View style={styles.field}>
@@ -2107,10 +2300,7 @@ export default function HomeScreen() {
                   ]}
                 >
                   <Text
-                    style={[
-                      styles.sidebarNavText,
-                      activeScreen === 'home' && styles.sidebarNavTextActive,
-                    ]}
+                    style={[styles.sidebarNavText, activeScreen === 'home' && styles.sidebarNavTextActive]}
                   >
                     Home
                   </Text>
@@ -2143,10 +2333,7 @@ export default function HomeScreen() {
                   ]}
                 >
                   <Text
-                    style={[
-                      styles.sidebarNavText,
-                      activeScreen === 'media' && styles.sidebarNavTextActive,
-                    ]}
+                    style={[styles.sidebarNavText, activeScreen === 'media' && styles.sidebarNavTextActive]}
                   >
                     Media
                   </Text>
@@ -2204,17 +2391,17 @@ export default function HomeScreen() {
                     accessibilityLabel="Open sidebar"
                     onPress={openSidebar}
                     style={({ pressed }) => [styles.topIconButtonHitbox, pressed && styles.glassPressed]}
+                  >
+                    <GlassSurface
+                      colorScheme={isDark ? 'dark' : 'light'}
+                      enabled={liquidGlassEnabled}
+                      isInteractive
+                      style={styles.topIconButton}
+                      tintColor={colors.glassTint}
                     >
-                      <GlassSurface
-                        colorScheme={isDark ? 'dark' : 'light'}
-                        enabled={liquidGlassEnabled}
-                        isInteractive
-                        style={styles.topIconButton}
-                        tintColor={colors.glassTint}
-                      >
-                        <AppleIcon color={colors.text} name="line.3.horizontal" size={23} />
-                      </GlassSurface>
-                    </Pressable>
+                      <AppleIcon color={colors.text} name="line.3.horizontal" size={23} />
+                    </GlassSurface>
+                  </Pressable>
 
                   {activeScreen === 'home' ? (
                     <>
@@ -2301,98 +2488,96 @@ export default function HomeScreen() {
                         {visibleFeedItems.map((item) => {
                           const personal = isPersonalFeedItem(item)
                           return (
-                          <Pressable
-                            accessibilityLabel={`Open ${item.title}`}
-                            accessibilityRole="link"
-                            key={item.id}
-                            onPress={() => {
-                              if (canOpenFeedItem(item)) {
-                                Linking.openURL(item.sourceUrl).catch(() => undefined)
-                              }
-                            }}
-                            style={({ pressed }) => [
-                              styles.feedItem,
-                              personal && styles.feedItemPersonal,
-                              pressed && styles.feedItemPressed,
-                            ]}
-                          >
-                            {item.imageUrl ? (
-                              <Image
-                                accessibilityLabel={item.title}
-                                resizeMode="cover"
-                                source={{ uri: item.imageUrl }}
-                                style={styles.feedCardImage}
-                              />
-                            ) : null}
-                            <View style={styles.feedDateRow}>
-                              <Text style={[styles.feedDate, personal && styles.feedDatePersonal]}>
-                                {formatFeedDate(item)}
+                            <Pressable
+                              accessibilityLabel={`Open ${item.title}`}
+                              accessibilityRole="link"
+                              key={item.id}
+                              onPress={() => {
+                                if (canOpenFeedItem(item)) {
+                                  Linking.openURL(item.sourceUrl).catch(() => undefined)
+                                }
+                              }}
+                              style={({ pressed }) => [
+                                styles.feedItem,
+                                personal && styles.feedItemPersonal,
+                                pressed && styles.feedItemPressed,
+                              ]}
+                            >
+                              {item.imageUrl ? (
+                                <Image
+                                  accessibilityLabel={item.title}
+                                  resizeMode="cover"
+                                  source={{ uri: item.imageUrl }}
+                                  style={styles.feedCardImage}
+                                />
+                              ) : null}
+                              <View style={styles.feedDateRow}>
+                                <Text style={[styles.feedDate, personal && styles.feedDatePersonal]}>
+                                  {formatFeedDate(item)}
+                                </Text>
+                                {personal ? <Text style={styles.feedPersonalPill}>Saved</Text> : null}
+                              </View>
+                              <Text style={[styles.feedCardTitle, personal && styles.feedCardTitlePersonal]}>
+                                {item.title}
                               </Text>
-                              {personal ? <Text style={styles.feedPersonalPill}>Saved</Text> : null}
-                            </View>
-                            <Text style={[styles.feedCardTitle, personal && styles.feedCardTitlePersonal]}>
-                              {item.title}
-                            </Text>
-                            {formatFeedMeta(item) ? (
-                              <Text style={styles.feedMeta}>{formatFeedMeta(item)}</Text>
-                            ) : null}
-                            {item.summary ? <Text style={styles.feedSummary}>{item.summary}</Text> : null}
-                            <View style={styles.feedActions}>
-                              <Pressable
-                                accessibilityLabel="Like feed item"
-                                onPress={(event) => {
-                                  event.stopPropagation()
-                                  sendFeedFeedback(
-                                    item,
-                                    item.feedback === 'save' || item.feedback === 'like' ? 'clear' : 'save',
-                                  )
-                                }}
-                                style={({ pressed }) => [
-                                  styles.feedActionButton,
-                                  (item.feedback === 'save' || item.feedback === 'like') &&
-                                    styles.feedActionButtonActive,
-                                  pressed && styles.pressed,
-                                ]}
-                              >
-                                <AppleIcon
-                                  color={
-                                    item.feedback === 'save' || item.feedback === 'like'
-                                      ? colors.actionText
-                                      : colors.text
-                                  }
-                                  name="hand.thumbsup"
-                                  size={18}
-                                />
-                              </Pressable>
-                              <Pressable
-                                accessibilityLabel="Dislike feed item"
-                                onPress={(event) => {
-                                  event.stopPropagation()
-                                  dismissFeedItem(item)
-                                }}
-                                style={({ pressed }) => [
-                                  styles.feedActionButton,
-                                  pressed && styles.pressed,
-                                ]}
-                              >
-                                <AppleIcon
-                                  color={colors.text}
-                                  name="hand.thumbsdown"
-                                  size={18}
-                                />
-                              </Pressable>
-                            </View>
-                          </Pressable>
+                              {formatFeedMeta(item) ? (
+                                <Text style={styles.feedMeta}>{formatFeedMeta(item)}</Text>
+                              ) : null}
+                              {item.summary ? <Text style={styles.feedSummary}>{item.summary}</Text> : null}
+                              <View style={styles.feedActions}>
+                                <Pressable
+                                  accessibilityLabel="Like feed item"
+                                  onPress={(event) => {
+                                    event.stopPropagation()
+                                    sendFeedFeedback(
+                                      item,
+                                      item.feedback === 'save' || item.feedback === 'like' ? 'clear' : 'save',
+                                    )
+                                  }}
+                                  style={({ pressed }) => [
+                                    styles.feedActionButton,
+                                    (item.feedback === 'save' || item.feedback === 'like') &&
+                                      styles.feedActionButtonActive,
+                                    pressed && styles.pressed,
+                                  ]}
+                                >
+                                  <AppleIcon
+                                    color={
+                                      item.feedback === 'save' || item.feedback === 'like'
+                                        ? colors.actionText
+                                        : colors.text
+                                    }
+                                    name="hand.thumbsup"
+                                    size={18}
+                                  />
+                                </Pressable>
+                                <Pressable
+                                  accessibilityLabel="Dislike feed item"
+                                  onPress={(event) => {
+                                    event.stopPropagation()
+                                    dismissFeedItem(item)
+                                  }}
+                                  style={({ pressed }) => [
+                                    styles.feedActionButton,
+                                    pressed && styles.pressed,
+                                  ]}
+                                >
+                                  <AppleIcon color={colors.text} name="hand.thumbsdown" size={18} />
+                                </Pressable>
+                              </View>
+                            </Pressable>
                           )
                         })}
                       </View>
                     ) : (
                       <View style={styles.feedEmpty}>
                         <Text style={styles.feedEmptyTitle}>
-                          {feedTab === 'saved' ? 'No saved events yet' : 'No upcoming items yet'}
+                          {feedTab === 'saved' ? 'No saved events yet' : 'Loading nearby events...'}
                         </Text>
                         <Text style={styles.feedEmptyText}>
-                          {feedTab === 'saved' ? 'Tap plus to add one.' : 'Pull to refresh.'}
+                          {feedTab === 'saved'
+                            ? 'Tap plus to add one.'
+                            : 'compoota is looking for real events near you.'}
                         </Text>
                       </View>
                     )}
@@ -2410,7 +2595,9 @@ export default function HomeScreen() {
                       style={styles.messages}
                     >
                       {messages
-                        .filter((message) => message.text || message.media?.length || message.activity?.length)
+                        .filter(
+                          (message) => message.text || message.media?.length || message.activity?.length,
+                        )
                         .map((message) => (
                           <View
                             key={message.id}
@@ -2426,7 +2613,9 @@ export default function HomeScreen() {
                                   ]}
                                 >
                                   <View style={styles.activityLineTextWrap}>
-                                    <Text style={styles.activityLineTitle}>{activityStatusText(message)}</Text>
+                                    <Text style={styles.activityLineTitle}>
+                                      {activityStatusText(message)}
+                                    </Text>
                                   </View>
                                 </Pressable>
                               ) : null}
@@ -2464,7 +2653,10 @@ export default function HomeScreen() {
 
                     {error ? <Text style={styles.chatError}>{error}</Text> : null}
 
-                    <KeyboardStickyView offset={{ opened: Math.max(insets.bottom, 16) + 12 }} style={styles.composerWrap}>
+                    <KeyboardStickyView
+                      offset={{ opened: Math.max(insets.bottom, 16) }}
+                      style={styles.composerWrap}
+                    >
                       {renderComposer()}
                     </KeyboardStickyView>
                   </>
@@ -2493,33 +2685,37 @@ export default function HomeScreen() {
                       <Text style={styles.mediaEmptyText}>{maintenanceError}</Text>
                     ) : maintenanceTasks.length ? (
                       <View style={styles.maintenanceList}>
-                        {maintenanceTasks.map((task) => (
-                          <View key={task.id} style={styles.maintenanceItem}>
-                            <View style={styles.maintenanceItemText}>
-                              <Text style={styles.maintenanceTitle}>{task.title}</Text>
-                              <Text style={styles.maintenanceMeta}>
-                                Due {formatMaintenanceDate(task.nextDueAt)}
-                                {task.cadenceDays ? ` · every ${task.cadenceDays} days` : ''}
-                              </Text>
-                              {task.lastCompletedAt ? (
+                        {maintenanceTasks.map((task) => {
+                          const cadenceLabel = formatMaintenanceCadence(task.cadenceDays)
+                          const isRecurring = Boolean(task.cadenceDays)
+                          return (
+                            <View key={task.id} style={styles.maintenanceItem}>
+                              <View style={styles.maintenanceItemText}>
+                                <Text style={styles.maintenanceTitle}>{task.title}</Text>
                                 <Text style={styles.maintenanceMeta}>
-                                  Last done {formatMaintenanceDate(task.lastCompletedAt)}
+                                  {isRecurring ? 'Next due' : 'Due'} {formatMaintenanceDate(task.nextDueAt)}
+                                  {cadenceLabel ? ` · ${cadenceLabel}` : ''}
                                 </Text>
-                              ) : null}
+                                {task.lastCompletedAt ? (
+                                  <Text style={styles.maintenanceMeta}>
+                                    Last done {formatMaintenanceDate(task.lastCompletedAt)}
+                                  </Text>
+                                ) : null}
+                              </View>
+                              <Pressable
+                                accessibilityLabel={isRecurring ? `Log ${task.title} completed` : `Complete ${task.title}`}
+                                disabled={completingMaintenanceId === task.id}
+                                onPress={() => completeMaintenance(task)}
+                                style={({ pressed }) => [
+                                  styles.maintenanceDoneButton,
+                                  (pressed || completingMaintenanceId === task.id) && styles.pressed,
+                                ]}
+                              >
+                                <Text style={styles.maintenanceDoneText}>{isRecurring ? 'Log' : 'Complete'}</Text>
+                              </Pressable>
                             </View>
-                            <Pressable
-                              accessibilityLabel={`Mark ${task.title} done`}
-                              disabled={completingMaintenanceId === task.id}
-                              onPress={() => completeMaintenance(task)}
-                              style={({ pressed }) => [
-                                styles.maintenanceDoneButton,
-                                (pressed || completingMaintenanceId === task.id) && styles.pressed,
-                              ]}
-                            >
-                              <Text style={styles.maintenanceDoneText}>Done</Text>
-                            </Pressable>
-                          </View>
-                        ))}
+                          )
+                        })}
                       </View>
                     ) : (
                       <Text style={styles.mediaEmptyText}>Ask compoota to add maintenance tasks.</Text>
@@ -2550,10 +2746,7 @@ export default function HomeScreen() {
                               accessibilityLabel="Open image"
                               key={item.id}
                               onPress={() => setSelectedMedia(item)}
-                              style={({ pressed }) => [
-                                styles.mediaLibraryItem,
-                                pressed && styles.pressed,
-                              ]}
+                              style={({ pressed }) => [styles.mediaLibraryItem, pressed && styles.pressed]}
                             >
                               <Image
                                 accessibilityLabel={item.fileName || 'Stored image'}
@@ -2707,7 +2900,9 @@ export default function HomeScreen() {
               style={({ pressed }) => [styles.reminderToggle, pressed && styles.pressed]}
             >
               <View style={[styles.reminderCheckbox, newFeedEventHasTime && styles.reminderCheckboxActive]}>
-                {newFeedEventHasTime ? <AppleIcon color={colors.actionText} name="checkmark" size={15} /> : null}
+                {newFeedEventHasTime ? (
+                  <AppleIcon color={colors.actionText} name="checkmark" size={15} />
+                ) : null}
               </View>
               <Text style={styles.reminderToggleText}>Add time</Text>
             </Pressable>
@@ -2744,7 +2939,9 @@ export default function HomeScreen() {
               style={({ pressed }) => [styles.reminderToggle, pressed && styles.pressed]}
             >
               <View style={[styles.reminderCheckbox, newFeedEventRemind && styles.reminderCheckboxActive]}>
-                {newFeedEventRemind ? <AppleIcon color={colors.actionText} name="checkmark" size={15} /> : null}
+                {newFeedEventRemind ? (
+                  <AppleIcon color={colors.actionText} name="checkmark" size={15} />
+                ) : null}
               </View>
               <Text style={styles.reminderToggleText}>Remind everyone 1 week before</Text>
             </Pressable>
@@ -2902,11 +3099,7 @@ function createColors(isDark: boolean) {
   }
 }
 
-function createStyles(
-  isDark: boolean,
-  insets: { top: number; bottom: number },
-  liquidGlassEnabled: boolean,
-) {
+function createStyles(isDark: boolean, insets: { top: number; bottom: number }, liquidGlassEnabled: boolean) {
   const colors = createColors(isDark)
   const shadowColor = isDark ? '#000000' : '#6f6f68'
   const bottomInset = insets.bottom
@@ -2954,6 +3147,33 @@ function createStyles(
     connectForm: {
       gap: 14,
     },
+    connectionTargets: {
+      flexDirection: 'row',
+      gap: 10,
+      flexWrap: 'wrap',
+    },
+    connectionTargetButton: {
+      minHeight: 38,
+      borderRadius: 19,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      backgroundColor: colors.input,
+      paddingHorizontal: 14,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    connectionTargetButtonActive: {
+      backgroundColor: colors.action,
+      borderColor: colors.action,
+    },
+    connectionTargetText: {
+      color: colors.text,
+      fontSize: 14,
+      fontWeight: '700',
+    },
+    connectionTargetTextActive: {
+      color: colors.actionText,
+    },
     field: {
       gap: 8,
     },
@@ -2971,6 +3191,22 @@ function createStyles(
       color: colors.text,
       paddingHorizontal: 14,
       fontSize: 16,
+    },
+    locationRow: {
+      flexDirection: 'row',
+      gap: 10,
+      alignItems: 'center',
+    },
+    locationInput: {
+      flex: 1,
+    },
+    locationButton: {
+      width: 50,
+      height: 50,
+      borderRadius: 25,
+      backgroundColor: colors.action,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
     codeInput: {
       fontVariant: ['tabular-nums'],
