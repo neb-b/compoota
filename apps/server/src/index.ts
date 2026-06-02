@@ -5,12 +5,13 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import type Database from "better-sqlite3";
+import type { Database } from "./sqlite.js";
 import { AuthError, verifyDeviceToken, verifySetupSecret } from "./auth.js";
 import { loadConfig, type Config } from "./config.js";
 import { createDeviceToken, createPairingCode, hashSecret } from "./crypto.js";
 import { getDefaultHouseholdId, openDatabase, type PairingCodeRow } from "./db.js";
 import {
+  clearNearbyFeedItems,
   clearRunningFeedRuns,
   createManualFeedItem,
   getOrCreateFeedPreferences,
@@ -206,7 +207,7 @@ function mediaExtension(mimeType: string): string {
 function saveCommandMedia(
   body: CommandBody,
   deviceId: string,
-  db: Database.Database,
+  db: Database,
   config: Config,
   createdAt: string
 ): Array<{ id: string; deviceId: string; path: string; mimeType: string; originalName?: string; byteSize: number; extension: string }> {
@@ -290,7 +291,7 @@ async function mediaRowsResponse(media: MediaRow[], config: Config) {
 async function uploadCommandMediaToR2(
   media: Array<{ id: string; deviceId: string; path: string; mimeType: string; originalName?: string; byteSize: number; extension: string }>,
   config: Config,
-  db: Database.Database,
+  db: Database,
   onUploaded?: (mediaId: string, remoteUrl: string | null) => void,
   onError?: (mediaId: string, error: unknown) => void
 ): Promise<MediaRow[]> {
@@ -340,7 +341,7 @@ function imageFileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
-function mediaReferencesFromReply(reply: string, deviceId: string, db: Database.Database): MediaRow[] {
+function mediaReferencesFromReply(reply: string, deviceId: string, db: Database): MediaRow[] {
   const rows: MediaRow[] = [];
   const uuidPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
   const imagePathPattern = /(?:\/|file:\/\/)[^\s`'"<>)]+?\.(?:jpe?g|png|webp|heic|heif)\b/gi;
@@ -407,7 +408,7 @@ function buildHermesText(text: string, media: Array<{ id: string; path: string; 
   ].join("\n");
 }
 
-function createServer(config: Config, db: Database.Database) {
+function createServer(config: Config, db: Database) {
   const defaultHouseholdId = getDefaultHouseholdId(db);
   const app = Fastify({
     logger: true,
@@ -599,6 +600,17 @@ function createServer(config: Config, db: Database.Database) {
   app.post("/feed/refresh", async (request) => {
     const device = verifyDeviceToken(request, db, config);
     return refreshFeedForDevice(db, config, device.household_id);
+  });
+
+  app.post("/feed/clear", async (request) => {
+    const device = verifyDeviceToken(request, db, config);
+    const cleared = clearNearbyFeedItems(db, device.household_id);
+    return {
+      cleared,
+      preferences: getOrCreateFeedPreferences(db, config, device.household_id),
+      run: latestFeedRun(db, device.household_id),
+      items: listFeedItems(db, device.household_id)
+    };
   });
 
   app.post("/feed/items", async (request, reply) => {

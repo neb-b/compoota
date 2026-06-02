@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
-import Database from "better-sqlite3";
+import Database from "./sqlite.js";
 
 export type DeviceRow = {
   id: string;
@@ -52,7 +52,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function getDefaultHouseholdId(db: Database.Database): string {
+export function getDefaultHouseholdId(db: Database): string {
   const existing = db.prepare("SELECT id FROM households ORDER BY created_at ASC LIMIT 1").get() as
     | { id: string }
     | undefined;
@@ -65,14 +65,13 @@ export function getDefaultHouseholdId(db: Database.Database): string {
   return id;
 }
 
-export function openDatabase(databasePath: string): Database.Database {
+export function openDatabase(databasePath: string): Database {
   if (databasePath !== ":memory:") {
     mkdirSync(dirname(databasePath), { recursive: true });
   }
 
   const db = new Database(databasePath);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS households (

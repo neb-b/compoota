@@ -21,6 +21,7 @@ type RunHermesOptions = {
   runId?: string;
   imagePaths?: string[];
   toolsets?: string[];
+  timeoutSeconds?: number;
   onActivity?: (activity: CommandActivity) => void;
 };
 
@@ -148,6 +149,7 @@ export async function runHermesCommand(
 
   const startedAt = Date.now();
   const runId = options.runId ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const timeoutSeconds = options.timeoutSeconds ?? config.hermesTimeoutSeconds;
   const progressFile = join(tmpdir(), "compoota-progress", `${runId}.jsonl`);
   mkdirSync(dirname(progressFile), { recursive: true });
   rmSync(progressFile, { force: true });
@@ -217,8 +219,8 @@ export async function runHermesCommand(
         } else {
           child.kill("SIGTERM");
         }
-        reject(new Error(`Local agent timed out after ${config.hermesTimeoutSeconds}s`));
-      }, config.hermesTimeoutSeconds * 1000);
+        reject(new Error(`Local agent timed out after ${timeoutSeconds}s`));
+      }, timeoutSeconds * 1000);
 
       child.on("error", (error) => {
         clearTimeout(timeout);

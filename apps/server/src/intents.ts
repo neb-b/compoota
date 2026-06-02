@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Database } from "./sqlite.js";
 import { createMaintenanceTask, completeMaintenanceTask } from "./maintenance.js";
 import { createReminder } from "./notifications.js";
 
@@ -73,7 +73,7 @@ function cleanupMaintenanceTitle(text: string): string {
 }
 
 export function handleStructuredIntent(
-  db: Database.Database,
+  db: Database,
   householdId: string,
   text: string
 ): { handled: true; reply: string } | null {

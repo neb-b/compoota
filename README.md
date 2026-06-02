@@ -9,8 +9,8 @@ The local agent is not exposed publicly.
 ## Current status
 
 - Expo TypeScript mobile app
-- Node/Fastify TypeScript server
-- SQLite persistence
+- Bun/Fastify TypeScript server
+- Bun SQLite persistence
 - Pairing-code device registration
 - Long-lived device tokens
 - Docker Compose deployment for 64-bit Raspberry Pi OS
@@ -18,14 +18,14 @@ The local agent is not exposed publicly.
 
 ## Local development
 
-Use Node.js 20 or newer.
+Use Bun for the house-server.
 
 Server:
 
 ```sh
 cd apps/server
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 Or from the repo root, with `.env` loaded:
@@ -192,6 +192,10 @@ The Home screen reads stored feed items with `GET /feed`; pull-to-refresh starts
 a real Hermes nearby-events research run. If no events are stored yet, the app
 shows a loading nearby events state instead of fake cards.
 
+Nearby feed research can take longer than a normal chat command. Keep
+`HERMES_TIMEOUT_SECONDS` short for ordinary assistant requests, and tune
+`FEED_REFRESH_TIMEOUT_SECONDS` when local event searches need more time.
+
 Setup/admin scripts:
 
 ```sh
@@ -215,10 +219,13 @@ Those variables are only used in `__DEV__` and only when no saved connection exi
 
 ## Mobile app setup
 
+NativeWind v5 preview powers mobile styling and requires Node 20+ when Metro
+starts. Use Bun for dependency management.
+
 ```sh
 cd apps/mobile
-npm install
-npx expo start
+bun install
+bunx expo start --clear
 ```
 
 For an installable iPhone build:

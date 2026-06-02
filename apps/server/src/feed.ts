@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { Database } from "./sqlite.js";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import type { FeedItemRow, HouseholdRow } from "./db.js";
@@ -176,7 +176,7 @@ function preferencesResponse(row: FeedPreferencesRow): FeedPreferencesResponse {
 }
 
 export function getOrCreateFeedPreferences(
-  db: Database.Database,
+  db: Database,
   config: Config,
   householdId: string
 ): FeedPreferencesResponse {
@@ -199,7 +199,7 @@ export function getOrCreateFeedPreferences(
 }
 
 export function updateFeedPreferences(
-  db: Database.Database,
+  db: Database,
   config: Config,
   householdId: string,
   input: Partial<FeedPreferencesResponse>
@@ -225,6 +225,10 @@ export function updateFeedPreferences(
     updatedAt,
     householdId
   );
+
+  if (next.homeLocation !== current.homeLocation || next.radiusMiles !== current.radiusMiles) {
+    clearNearbyFeedItems(db, householdId);
+  }
 
   return getOrCreateFeedPreferences(db, config, householdId);
 }
@@ -260,14 +264,14 @@ function extractJsonObject(value: string): unknown {
   }
 }
 
-export function clearRunningFeedRuns(db: Database.Database): number {
+export function clearRunningFeedRuns(db: Database): number {
   const result = db
     .prepare("UPDATE event_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE status = 'running'")
     .run(nowIso(), "Manually cleared stale running feed refresh.");
   return result.changes;
 }
 
-function feedbackSummary(db: Database.Database, householdId: string): string {
+function feedbackSummary(db: Database, householdId: string): string {
   const rows = db
     .prepare(
       "SELECT e.title, e.category, ef.value FROM event_feedback ef JOIN events e ON e.id = ef.event_id WHERE ef.household_id = ? ORDER BY ef.updated_at DESC LIMIT 20"
@@ -308,7 +312,7 @@ function isInUpcomingWeekend(item: HermesFeedItem, now = new Date()): boolean {
   return startsAt >= window.startsAt.getTime() && startsAt <= window.endsAt.getTime();
 }
 
-function buildFeedPrompt(preferences: FeedPreferencesResponse, config: Config, db: Database.Database, householdId: string): string {
+function buildFeedPrompt(preferences: FeedPreferencesResponse, config: Config, db: Database, householdId: string): string {
   const maxItems = Math.min(config.feedMaxItems, 20);
   const today = new Date().toISOString();
   const horizon = new Date(Date.now() + config.feedLookaheadDays * 24 * 60 * 60 * 1000).toISOString();
@@ -319,7 +323,7 @@ function buildFeedPrompt(preferences: FeedPreferencesResponse, config: Config, d
     `Research window: from now through ${horizon}, about the next ${config.feedLookaheadDays} days.`,
     `Upcoming weekend focus: include at least ${UPCOMING_WEEKEND_MIN_ITEMS} real options between ${weekend.startsAt.toISOString()} and ${weekend.endsAt.toISOString()} when any worthwhile local options exist.`,
     `Location: ${preferences.homeLocation}. Radius: ${preferences.radiusMiles} miles.`,
-    "Default location is Saline, MI. Prioritize Saline and nearby Ann Arbor/Ypsilanti options.",
+    `Prioritize options in or near ${preferences.homeLocation}. Do not include options outside the ${preferences.radiusMiles}-mile radius.`,
     "Visible ordering will be chronological, not algorithmic. Use score only for acquisition quality.",
     "Find newly announced items anywhere inside the research window. Do not only append later events; items discovered between existing upcoming events should be returned too so the app can slot them chronologically.",
     "Distance rule: farther items need to be more special or worthwhile to score high enough to include.",
@@ -375,7 +379,7 @@ function feedItemResponse(row: FeedItemRow, feedback: FeedFeedbackValue | null):
   };
 }
 
-export function listFeedItems(db: Database.Database, householdId: string): FeedItemResponse[] {
+export function listFeedItems(db: Database, householdId: string): FeedItemResponse[] {
   const rows = db
     .prepare(
       `SELECT e.*, ef.value AS feedback
@@ -391,7 +395,14 @@ export function listFeedItems(db: Database.Database, householdId: string): FeedI
   return rows.map((row) => feedItemResponse(row, row.feedback ?? null));
 }
 
-function createReminderForEvent(db: Database.Database, householdId: string, item: FeedItemResponse): void {
+export function clearNearbyFeedItems(db: Database, householdId: string): number {
+  const result = db
+    .prepare("DELETE FROM events WHERE household_id = ? AND source_url NOT LIKE 'compoota://personal-event/%'")
+    .run(householdId);
+  return result.changes;
+}
+
+function createReminderForEvent(db: Database, householdId: string, item: FeedItemResponse): void {
   const remindAt = new Date(Date.parse(item.startsAt) - 7 * 24 * 60 * 60 * 1000);
   if (!Number.isFinite(remindAt.getTime()) || remindAt.getTime() <= Date.now()) {
     return;
@@ -416,7 +427,7 @@ function createReminderForEvent(db: Database.Database, householdId: string, item
 }
 
 export function createManualFeedItem(
-  db: Database.Database,
+  db: Database,
   householdId: string,
   input: ManualFeedItemInput
 ): FeedItemResponse {
@@ -457,7 +468,7 @@ export function createManualFeedItem(
 }
 
 function persistFeedItems(
-  db: Database.Database,
+  db: Database,
   config: Config,
   householdId: string,
   items: HermesFeedItem[]
@@ -506,6 +517,7 @@ function persistFeedItems(
   );
 
   const transaction = db.transaction(() => {
+    clearNearbyFeedItems(db, householdId);
     for (const item of finalItems) {
       upsert.run(
         randomUUID(),
@@ -546,7 +558,7 @@ function runResponse(row: FeedRefreshRunRow): FeedRefreshResponse["run"] {
 }
 
 export async function refreshFeedForDevice(
-  db: Database.Database,
+  db: Database,
   config: Config,
   householdId: string
 ): Promise<FeedRefreshResponse> {
@@ -575,7 +587,7 @@ export async function refreshFeedForDevice(
 }
 
 export function setFeedFeedback(
-  db: Database.Database,
+  db: Database,
   householdId: string,
   itemId: string,
   value: FeedFeedbackInput
@@ -603,7 +615,7 @@ export function setFeedFeedback(
 }
 
 export async function rememberFeedFeedbackInHermes(
-  db: Database.Database,
+  db: Database,
   config: Config,
   householdId: string,
   itemId: string,
@@ -640,7 +652,7 @@ export async function rememberFeedFeedbackInHermes(
   });
 }
 
-export function latestFeedRun(db: Database.Database, householdId: string): FeedRefreshResponse["run"] | null {
+export function latestFeedRun(db: Database, householdId: string): FeedRefreshResponse["run"] | null {
   const run = db
     .prepare("SELECT * FROM event_refresh_runs WHERE household_id = ? ORDER BY started_at DESC LIMIT 1")
     .get(householdId) as FeedRefreshRunRow | undefined;
@@ -650,25 +662,25 @@ export function latestFeedRun(db: Database.Database, householdId: string): FeedR
 let schedulerRunning = false;
 let schedulerTimer: ReturnType<typeof setTimeout> | null = null;
 
-export function runningFeedRuns(db: Database.Database): FeedRefreshResponse["run"][] {
+export function runningFeedRuns(db: Database): FeedRefreshResponse["run"][] {
   const rows = db
     .prepare("SELECT * FROM event_refresh_runs WHERE status = 'running' ORDER BY started_at DESC")
     .all() as FeedRefreshRunRow[];
   return rows.map(runResponse);
 }
 
-export function failStaleFeedRuns(db: Database.Database, config: Config): number {
-  const staleBefore = new Date(Date.now() - (config.hermesTimeoutSeconds + 30) * 1000).toISOString();
+export function failStaleFeedRuns(db: Database, config: Config): number {
+  const staleBefore = new Date(Date.now() - (config.feedRefreshTimeoutSeconds + 30) * 1000).toISOString();
   const result = db
     .prepare(
       "UPDATE event_refresh_runs SET status = 'error', finished_at = ?, error_message = ? WHERE status = 'running' AND started_at < ?"
     )
-    .run(nowIso(), `Feed refresh exceeded ${config.hermesTimeoutSeconds}s and was marked stale.`, staleBefore);
+    .run(nowIso(), `Feed refresh exceeded ${config.feedRefreshTimeoutSeconds}s and was marked stale.`, staleBefore);
   return result.changes;
 }
 
 async function refreshFeedForDeviceUnlocked(
-  db: Database.Database,
+  db: Database,
   config: Config,
   householdId: string
 ): Promise<FeedRefreshResponse> {
@@ -684,7 +696,12 @@ async function refreshFeedForDeviceUnlocked(
       throw new Error("Real event refresh requires HERMES_COMMAND_MODE=oneshot.");
     }
     const items = parseHermesFeed(
-      (await runHermesCommand(buildFeedPrompt(preferences, config, db, householdId), config, { runId })).reply,
+      (
+        await runHermesCommand(buildFeedPrompt(preferences, config, db, householdId), config, {
+          runId,
+          timeoutSeconds: config.feedRefreshTimeoutSeconds
+        })
+      ).reply,
       config
     );
     const itemCount = persistFeedItems(db, config, householdId, items);
@@ -707,7 +724,7 @@ async function refreshFeedForDeviceUnlocked(
 }
 
 export async function refreshFeedForAllDevices(
-  db: Database.Database,
+  db: Database,
   config: Config
 ): Promise<FeedRefreshAllResult[] | FeedRefreshBusyResult> {
   failStaleFeedRuns(db, config);
@@ -744,7 +761,7 @@ function msUntilNextRefresh(hour: number): number {
   return next.getTime() - now.getTime();
 }
 
-export function startFeedScheduler(db: Database.Database, config: Config): void {
+export function startFeedScheduler(db: Database, config: Config): void {
   if (!config.feedRefreshEnabled) {
     return;
   }

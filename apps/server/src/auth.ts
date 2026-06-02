@@ -1,5 +1,5 @@
 import type { FastifyRequest } from "fastify";
-import type Database from "better-sqlite3";
+import type { Database } from "./sqlite.js";
 import type { Config } from "./config.js";
 import type { DeviceRow } from "./db.js";
 import { hashSecret, safeEqual } from "./crypto.js";
@@ -46,7 +46,7 @@ export function verifySetupSecret(request: FastifyRequest, config: Config): void
 
 export function verifyDeviceToken(
   request: FastifyRequest,
-  db: Database.Database,
+  db: Database,
   config: Config
 ): DeviceRow {
   const token = bearerToken(request);

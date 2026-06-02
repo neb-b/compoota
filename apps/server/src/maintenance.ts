@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { Database } from "./sqlite.js";
 
 export type MaintenanceTaskInput = {
   title: string;
@@ -66,7 +66,7 @@ function taskResponse(row: MaintenanceTaskRow, completions: MaintenanceCompletio
 }
 
 function scheduleMaintenanceReminder(
-  db: Database.Database,
+  db: Database,
   householdId: string,
   taskId: string,
   title: string,
@@ -94,7 +94,7 @@ function scheduleMaintenanceReminder(
   );
 }
 
-export function listMaintenanceTasks(db: Database.Database, householdId: string) {
+export function listMaintenanceTasks(db: Database, householdId: string) {
   const tasks = db
     .prepare("SELECT * FROM maintenance_tasks WHERE household_id = ? AND status = 'active' ORDER BY COALESCE(next_due_at, '9999-12-31T23:59:59.999Z') ASC, title ASC")
     .all(householdId) as MaintenanceTaskRow[];
@@ -112,7 +112,7 @@ export function listMaintenanceTasks(db: Database.Database, householdId: string)
 }
 
 export function createMaintenanceTask(
-  db: Database.Database,
+  db: Database,
   householdId: string,
   input: MaintenanceTaskInput
 ) {
@@ -162,7 +162,7 @@ export function createMaintenanceTask(
 }
 
 export function completeMaintenanceTask(
-  db: Database.Database,
+  db: Database,
   householdId: string,
   taskId: string,
   input: { completedAt?: string | null; notes?: string | null }
@@ -202,7 +202,7 @@ export function completeMaintenanceTask(
   return taskResponse(row, completions);
 }
 
-export function archiveMaintenanceTask(db: Database.Database, householdId: string, taskId: string): boolean {
+export function archiveMaintenanceTask(db: Database, householdId: string, taskId: string): boolean {
   const now = nowIso();
   const result = db
     .prepare("UPDATE maintenance_tasks SET status = 'archived', updated_at = ? WHERE id = ? AND household_id = ?")

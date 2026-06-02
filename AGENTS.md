@@ -8,6 +8,7 @@ Keep new infrastructure encapsulated inside this repository whenever practical:
 
 - Use `.local/` for generated local runtime state, databases, media, Hermes home, virtualenvs, and caches.
 - Do not require a developer's global `~/.hermes`, global Python environment, or global Node packages for normal local development.
+- Prefer Bun for the house-server runtime and package management; the server SQLite layer uses `bun:sqlite`.
 - Prefer scripts that derive absolute paths from the repository root over hard-coded user paths.
 - Keep Pi/home-server deployment values configurable through `.env`; do not bake hostnames, usernames, or secrets into source.
 - Treat `.env` and `.local/` as disposable. They should be reproducible from tracked scripts/docs plus private credentials.
@@ -48,7 +49,7 @@ HERMES_PYTHON_PATH=<repo>/.local/hermes/hermes-agent/venv/bin/python
 - Server code is in `apps/server`.
 - Mobile app code is in `apps/mobile`.
 - Shared operational scripts live at the repo root or in `scripts/`.
-- Before finalizing server changes, run `npm run typecheck` in `apps/server` when feasible.
+- Before finalizing server changes, run `bun run typecheck` in `apps/server` when feasible.
 - Use `rg` for code search.
 
 ## Deployment Mindset

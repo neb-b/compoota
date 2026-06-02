@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { Database } from "./sqlite.js";
 
 type ReminderRow = {
   id: string;
@@ -58,7 +58,7 @@ async function sendExpoPush(messages: Array<Record<string, unknown>>): Promise<A
   return Array.isArray(body?.data) ? body.data : [];
 }
 
-export function listReminders(db: Database.Database, householdId: string) {
+export function listReminders(db: Database, householdId: string) {
   const rows = db
     .prepare(
       "SELECT * FROM reminders WHERE household_id = ? AND status = 'pending' ORDER BY remind_at ASC LIMIT 100"
@@ -78,7 +78,7 @@ export function listReminders(db: Database.Database, householdId: string) {
 }
 
 export function createReminder(
-  db: Database.Database,
+  db: Database,
   householdId: string,
   input: {
     sourceType?: string;
@@ -123,7 +123,7 @@ export function createReminder(
   return listReminders(db, householdId).find((reminder) => reminder.id === id);
 }
 
-async function processDueReminders(db: Database.Database): Promise<void> {
+async function processDueReminders(db: Database): Promise<void> {
   const reminders = db
     .prepare("SELECT * FROM reminders WHERE status = 'pending' AND remind_at <= ? ORDER BY remind_at ASC LIMIT 25")
     .all(nowIso()) as ReminderRow[];
@@ -182,7 +182,7 @@ async function processDueReminders(db: Database.Database): Promise<void> {
   }
 }
 
-export function startNotificationScheduler(db: Database.Database): void {
+export function startNotificationScheduler(db: Database): void {
   if (schedulerTimer) {
     return;
   }

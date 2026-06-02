@@ -19,6 +19,7 @@ export type Config = {
   hermesWorkingDirectory: string;
   hermesPythonPath: string;
   hermesTimeoutSeconds: number;
+  feedRefreshTimeoutSeconds: number;
   feedRefreshEnabled: boolean;
   feedRefreshHour: number;
   feedMaxItems: number;
@@ -127,6 +128,7 @@ export function loadConfig(): Config {
       "/home/pi/.hermes/hermes-agent/venv/bin/python"
     ),
     hermesTimeoutSeconds: readNumber("HERMES_TIMEOUT_SECONDS", 120),
+    feedRefreshTimeoutSeconds: readNumber("FEED_REFRESH_TIMEOUT_SECONDS", 420),
     feedRefreshEnabled: readBoolean("FEED_REFRESH_ENABLED", true),
     feedRefreshHour: readHour("FEED_REFRESH_HOUR", 5),
     feedMaxItems: readNumber("FEED_MAX_ITEMS", 30),

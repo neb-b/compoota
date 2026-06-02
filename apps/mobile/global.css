@@ -1,0 +1,19 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css";
+
+@import "nativewind/theme";
+
+@theme {
+  --font-display: "OcclusionGrotesqueYear3";
+  --color-compoota-light: #f8f8f7;
+  --color-compoota-dark: #111111;
+  --color-compoota-text-light: #171717;
+  --color-compoota-text-dark: #f6f6f4;
+  --color-compoota-muted-light: #686863;
+  --color-compoota-muted-dark: #a7a7a2;
+  --color-compoota-action-light: #0ea5e9;
+  --color-compoota-action-dark: #7dd3fc;
+  --color-compoota-sidebar: #ffffff;
+  --spacing-hairline: hairlineWidth();
+}
