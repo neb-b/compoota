@@ -1,12 +1,10 @@
-import { useEventListener } from 'expo'
-import { useVideoPlayer, VideoView } from 'expo-video'
 import React from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { GestureDetector } from 'react-native-gesture-handler'
 import Animated from 'react-native-reanimated'
 
 import type { ActiveScreen } from '../types'
-import type { AppColors } from '../lib/theme'
+import { PRIMARY_COLOR, type AppColors } from '../lib/theme'
 import { AppleIcon, GlassSurface } from './ui'
 
 export const SIDEBAR_EDGE_HIT_SLOP = 30
@@ -21,9 +19,6 @@ export const SIDEBAR_SPRING = {
   mass: 0.9,
   stiffness: 240,
 }
-
-const SIDEBAR_VIDEO_LOOP_END = 7.74
-const SIDEBAR_BACKGROUND_VIDEO = require('../../assets/videos/shader-lab-2026-06-02T03-33-25.mp4')
 
 const SIDEBAR_NAV_ITEMS: Array<{
   label: string
@@ -43,7 +38,7 @@ const SIDEBAR_NAV_ITEMS: Array<{
   // },
 ]
 
-const SIDEBAR_ACTIVE_TEXT = '#bae6fd'
+const SIDEBAR_ACTIVE_TEXT = PRIMARY_COLOR
 
 type AppSidebarProps = {
   activeScreen: ActiveScreen
@@ -68,41 +63,15 @@ type AppSidebarProps = {
   topInset: number
 }
 
-function SidebarVideoBackground({ colors }: { colors: AppColors }) {
-  const player = useVideoPlayer(SIDEBAR_BACKGROUND_VIDEO, (videoPlayer) => {
-    videoPlayer.loop = false
-    videoPlayer.muted = true
-    videoPlayer.timeUpdateEventInterval = 0.18
-    videoPlayer.play()
-  })
-
-  useEventListener(player, 'timeUpdate', ({ currentTime }) => {
-    if (currentTime >= SIDEBAR_VIDEO_LOOP_END) {
-      player.currentTime = 0.04
-      player.play()
-    }
-  })
-
+function SidebarGridBackground() {
   return (
     <View
       accessibilityElementsHidden
       className="absolute inset-0"
       importantForAccessibility="no-hide-descendants"
       pointerEvents="none"
-    >
-      <VideoView
-        accessible={false}
-        allowsPictureInPicture={false}
-        allowsVideoFrameAnalysis={false}
-        contentFit="cover"
-        fullscreenOptions={{ enable: false }}
-        nativeControls={false}
-        player={player}
-        style={styles.video}
-      />
-      <View className="absolute inset-0" />
-      <View className="absolute inset-0" style={{ backgroundColor: colors.sidebarVideoWash }} />
-    </View>
+      style={{ backgroundColor: '#000000' }}
+    />
   )
 }
 
@@ -134,7 +103,7 @@ export function AppSidebar({
   return (
     <View className="flex-1 overflow-hidden bg-slate-950">
       <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, sidebarBackdropStyle]}>
-        <SidebarVideoBackground colors={colors} />
+        <SidebarGridBackground />
       </Animated.View>
       <Animated.View
         pointerEvents={sidebarOpen ? 'auto' : 'none'}
@@ -153,8 +122,8 @@ export function AppSidebar({
             <View className="gap-1.5">
               <View className="mr-9 min-h-[58px] justify-center px-3.5">
                 <Text
-                  className="font-display text-2xl text-white"
-                  style={styles.sidebarTitleShadow}
+                  className="text-2xl text-white"
+                  style={styles.sidebarTitleText}
                 >
                   compoota...
                 </Text>
@@ -175,8 +144,8 @@ export function AppSidebar({
                     >
                       <View className="z-[1] flex-row items-center justify-start">
                         <Text
-                          className="font-display text-3xl"
-                          style={[styles.sidebarNavTextShadow, { color: active ? SIDEBAR_ACTIVE_TEXT : colors.sidebarText }]}
+                          className="text-3xl"
+                          style={[styles.sidebarNavText, { color: active ? SIDEBAR_ACTIVE_TEXT : colors.sidebarText }]}
                         >
                           {item.label}
                         </Text>
@@ -257,13 +226,6 @@ export function AppSidebar({
 }
 
 const styles = StyleSheet.create({
-  video: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: -88,
-    right: 0,
-  },
   sidebarUnderlay: {
     position: 'absolute',
     top: 0,
@@ -274,16 +236,13 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     zIndex: 1,
   },
-  sidebarTitleShadow: {
+  sidebarTitleText: {
+    fontFamily: 'Geist',
     lineHeight: 29,
-    textShadowColor: 'rgba(2,6,23,0.36)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 8,
   },
-  sidebarNavTextShadow: {
-    textShadowColor: 'rgba(2,6,23,0.28)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 6,
+  sidebarNavText: {
+    fontFamily: 'Geist',
+    lineHeight: 35,
   },
   mainPanel: {
     zIndex: 3,

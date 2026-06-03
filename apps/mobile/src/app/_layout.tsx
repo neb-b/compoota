@@ -15,6 +15,7 @@ SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
+    Geist: require('../../assets/fonts/Geist-Regular.otf'),
     OcclusionGrotesqueYear3: require('../../assets/fonts/OcclusionGrotesque-Year3.ttf'),
   });
 

@@ -1,11 +1,9 @@
-import Constants from 'expo-constants'
 import { useRouter } from 'expo-router'
 import React from 'react'
 import {
   ActivityIndicator,
   Image,
   Linking,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,7 +19,7 @@ import {
   formatFeedMeta,
   isPersonalFeedItem,
 } from '../../features/feed/model'
-import type { AppColors } from '../../lib/theme'
+import { PRIMARY_COLOR, PRIMARY_FOREGROUND_COLOR, type AppColors } from '../../lib/theme'
 import type { FeedItem, FeedView } from '../../types'
 import { AppleIcon } from '../ui'
 
@@ -29,27 +27,10 @@ const FEED_ROW_ACTION_WIDTH = 78
 const FEED_ROW_ACTIONS_WIDTH = FEED_ROW_ACTION_WIDTH * 2
 const FEED_ROW_SAVED_EMERALD = '#34d399'
 const FEED_ROW_PERSONAL_VIOLET = '#ddd6fe'
-const FEED_ROW_CALENDAR_CYAN = '#67e8f9'
 const FEED_ROW_SPRING = {
   damping: 25,
   mass: 0.9,
   stiffness: 260,
-}
-let expoSwiftUIPopover: typeof import('@expo/ui/swift-ui') | null | undefined
-
-function getExpoSwiftUIPopover() {
-  if (Platform.OS !== 'ios' || Constants.appOwnership === 'expo') {
-    return null
-  }
-  if (expoSwiftUIPopover !== undefined) {
-    return expoSwiftUIPopover
-  }
-  try {
-    expoSwiftUIPopover = require('@expo/ui/swift-ui') as typeof import('@expo/ui/swift-ui')
-  } catch {
-    expoSwiftUIPopover = null
-  }
-  return expoSwiftUIPopover
 }
 
 type FeedScreenProps = {
@@ -125,9 +106,14 @@ export function FeedScreen({
 
 function FeedCalendar({ colors, items }: { colors: AppColors; items: FeedItem[] }) {
   const months = React.useMemo(() => calendarMonthsForItems(items), [items])
+  const itemsKey = React.useMemo(() => items.map((item) => item.id).join('|'), [items])
   const [preview, setPreview] = React.useState<{ date: Date; items: FeedItem[]; weekDay: number } | null>(
     null,
   )
+
+  React.useEffect(() => {
+    setPreview(null)
+  }, [itemsKey])
 
   return (
     <View className="w-full max-w-[560px] self-center gap-7">
@@ -153,22 +139,26 @@ function FeedCalendar({ colors, items }: { colors: AppColors; items: FeedItem[] 
               </Text>
             ))}
           </View>
-          <View className="flex-row flex-wrap">
-            {month.days.map((day) => {
-              const dayItems = day.inMonth ? items.filter((item) => isEventOnDate(item, day.date)) : []
-              return (
-                <CalendarDay
-                  colors={colors}
-                  date={day.date}
-                  inMonth={day.inMonth}
-                  items={dayItems}
-                  key={day.key}
-                  rangeSegment={calendarRangeSegment(dayItems, day.date)}
-                  onPreview={setPreview}
-                  weekDay={day.weekDay}
-                />
-              )
-            })}
+          <View>
+            {chunkWeeks(month.days).map((week) => (
+              <View className="flex-row" key={week[0]?.key}>
+                {week.map((day) => {
+                  const dayItems = day.inMonth ? items.filter((item) => isEventOnDate(item, day.date)) : []
+                  return (
+                    <CalendarDay
+                      colors={colors}
+                      date={day.date}
+                      inMonth={day.inMonth}
+                      items={dayItems}
+                      key={day.key}
+                      rangeSegment={calendarRangeSegment(dayItems, day.date)}
+                      onPreview={setPreview}
+                      weekDay={day.weekDay}
+                    />
+                  )
+                })}
+              </View>
+            ))}
           </View>
         </View>
       ))}
@@ -193,9 +183,7 @@ function CalendarDay({
   rangeSegment: CalendarRangeSegment | null
   weekDay: number
 }) {
-  const [presented, setPresented] = React.useState(false)
   const hasItems = items.length > 0
-  const expoPopover = getExpoSwiftUIPopover()
 
   const cell = (
     <Pressable
@@ -240,37 +228,7 @@ function CalendarDay({
     </Pressable>
   )
 
-  if (!hasItems) {
-    return <View style={styles.calendarCell}>{cell}</View>
-  }
-
-  if (!expoPopover) {
-    return <View style={styles.calendarCell}>{cell}</View>
-  }
-
-  const { Host, Popover, RNHostView } = expoPopover
-
-  return (
-    <View style={styles.calendarCell}>
-      <Host matchContents>
-        <Popover
-          arrowEdge="top"
-          attachmentAnchor="center"
-          isPresented={presented}
-          onIsPresentedChange={setPresented}
-        >
-          <Popover.Trigger>
-            <RNHostView matchContents>{cell}</RNHostView>
-          </Popover.Trigger>
-          <Popover.Content>
-            <RNHostView matchContents>
-              <CalendarPopoverCard colors={colors} date={date} items={items} />
-            </RNHostView>
-          </Popover.Content>
-        </Popover>
-      </Host>
-    </View>
-  )
+  return <View style={styles.calendarCell}>{cell}</View>
 }
 
 function CalendarPopoverCard({ colors, date, items }: { colors: AppColors; date: Date; items: FeedItem[] }) {
@@ -284,7 +242,6 @@ function CalendarPopoverCard({ colors, date, items }: { colors: AppColors; date:
       <View className="mt-2 gap-3">
         {items.map((item) => {
           const personal = isPersonalFeedItem(item)
-          const accent = calendarItemColor(item)
           const meta = personal ? '' : formatFeedMeta(item)
           return (
             <Pressable
@@ -311,7 +268,7 @@ function CalendarPopoverCard({ colors, date, items }: { colors: AppColors; date:
               <Text
                 className="text-[16px] font-semibold leading-[20px]"
                 numberOfLines={2}
-                style={{ color: accent }}
+                style={{ color: PRIMARY_FOREGROUND_COLOR }}
               >
                 {item.title}
               </Text>
@@ -552,6 +509,14 @@ function calendarDaysForMonth(month: Date) {
   })
 }
 
+function chunkWeeks<T>(days: T[]) {
+  const weeks = []
+  for (let index = 0; index < days.length; index += 7) {
+    weeks.push(days.slice(index, index + 7))
+  }
+  return weeks
+}
+
 function isEventOnDate(item: FeedItem, date: Date) {
   const start = startOfDay(new Date(item.startsAt))
   const end = startOfDay(item.endsAt ? new Date(item.endsAt) : new Date(item.startsAt))
@@ -595,14 +560,8 @@ function calendarRangeSegment(items: FeedItem[], date: Date): CalendarRangeSegme
   }
 }
 
-function calendarItemColor(item: FeedItem) {
-  if (isPersonalFeedItem(item)) {
-    return FEED_ROW_PERSONAL_VIOLET
-  }
-  if (item.feedback === 'save' || item.feedback === 'like') {
-    return FEED_ROW_SAVED_EMERALD
-  }
-  return FEED_ROW_CALENDAR_CYAN
+function calendarItemColor(_item: FeedItem) {
+  return PRIMARY_COLOR
 }
 
 function formatFeedTime(item: FeedItem) {
@@ -693,7 +652,7 @@ function dateKey(value: Date) {
 
 const styles = StyleSheet.create({
   calendarCell: {
-    width: `${100 / 7}%`,
+    flex: 1,
   },
   calendarDot: {
     borderRadius: 3,

@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../features/auth/AuthProvider'
 import { useCreateFeedEventMutation, useUpdateFeedEventMutation } from '../../features/feed/api'
 import { combineEventDateTime } from '../../features/feed/model'
+import { PRIMARY_COLOR, PRIMARY_COLOR_SOFT, PRIMARY_FOREGROUND_COLOR } from '../../lib/theme'
 import { AppleIcon } from '../ui'
 
 const TAUPE_50 = '#fbfaf9'
@@ -50,7 +51,6 @@ export function NewEventScreen() {
   const [text, setText] = React.useState(() => firstParam(params.text))
   const [startDate, setStartDate] = React.useState(() => initialEventDate(firstParam(params.startsAt)))
   const [endDate, setEndDate] = React.useState<Date | null>(() => initialEventEndDate(firstParam(params.endsAt)))
-  const [remind, setRemind] = React.useState(false)
   const [error, setError] = React.useState('')
   const saving = createFeedEventMutation.isPending || updateFeedEventMutation.isPending
 
@@ -87,7 +87,7 @@ export function NewEventScreen() {
         endsAt,
         allDay: true,
         text: trimmedText,
-        remindOneWeekBefore: remind,
+        remindOneWeekBefore: false,
       }
 
       if (eventId) {
@@ -119,15 +119,7 @@ export function NewEventScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.header}>
-            <Text style={styles.title}>{editing ? 'Edit event' : 'New event'}</Text>
-            <Text style={styles.subtitle}>
-              {editing ? 'Update this personal event on the timeline.' : 'Quickly add something to the timeline.'}
-            </Text>
-          </View>
-
           <View style={styles.fieldGroup}>
-            <Text style={styles.label}>Event</Text>
             <TextInput
               autoCapitalize="sentences"
               autoFocus
@@ -142,20 +134,10 @@ export function NewEventScreen() {
           </View>
 
           <View style={styles.fieldGroup}>
-            <Text style={styles.label}>When</Text>
-
             <DateRangeCalendar
               endDate={endDate}
               onSelectDate={selectDate}
               startDate={startDate}
-            />
-          </View>
-
-          <View style={styles.fieldGroup}>
-            <ToggleRow
-              active={remind}
-              label="Remind everyone 1 week before"
-              onPress={() => setRemind((current) => !current)}
             />
           </View>
 
@@ -201,17 +183,6 @@ function startOfMonth(value: Date) {
   const next = startOfDay(value)
   next.setDate(1)
   return next
-}
-
-function ToggleRow({ active, label, onPress }: { active: boolean; label: string; onPress: () => void }) {
-  return (
-    <Pressable onPress={onPress} style={styles.toggleRow}>
-      <View style={[styles.checkbox, active ? styles.checkboxActive : null]}>
-        {active ? <AppleIcon color={TAUPE_950} name="checkmark" size={15} /> : null}
-      </View>
-      <Text style={styles.toggleText}>{label}</Text>
-    </Pressable>
-  )
 }
 
 function DateRangeCalendar({
@@ -264,35 +235,39 @@ function DateRangeCalendar({
       </View>
 
       <View style={styles.calendarGrid}>
-        {days.map((day) => {
-          const disabled = day.date < today
-          const selectedStart = sameDay(day.date, startDate)
-          const selectedEnd = endDate ? sameDay(day.date, endDate) : false
-          const inRange = selectedEndDay ? day.date >= selectedStartDay && day.date <= selectedEndDay : false
-          const active = selectedStart || selectedEnd
-          const fillLeft = selectedStart || day.date.getDay() === 0 ? '50%' : 0
-          const fillRight = selectedEnd || day.date.getDay() === 6 ? '50%' : 0
-          return (
-            <View key={day.key} style={styles.rangeDayCell}>
-              {inRange ? <View style={[styles.rangeDayFill, { left: fillLeft, right: fillRight }]} /> : null}
-              <Pressable
-                accessibilityLabel={new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(day.date)}
-                disabled={disabled}
-                onPress={() => onSelectDate(day.date)}
-                style={[
-                  styles.rangeDayButton,
-                  active ? styles.rangeDayButtonActive : null,
-                  !day.inMonth ? styles.rangeDayOutside : null,
-                  disabled ? styles.rangeDayDisabled : null,
-                ]}
-              >
-                <Text style={[styles.rangeDayText, active ? styles.rangeDayTextActive : null]}>
-                  {day.date.getDate()}
-                </Text>
-              </Pressable>
-            </View>
-          )
-        })}
+        {chunkWeeks(days).map((week) => (
+          <View key={week[0]?.key} style={styles.calendarWeekRow}>
+            {week.map((day) => {
+              const disabled = day.date < today
+              const selectedStart = sameDay(day.date, startDate)
+              const selectedEnd = endDate ? sameDay(day.date, endDate) : false
+              const inRange = selectedEndDay ? day.date >= selectedStartDay && day.date <= selectedEndDay : false
+              const active = selectedStart || selectedEnd
+              const fillLeft = selectedStart ? '50%' : 0
+              const fillRight = selectedEnd ? '50%' : 0
+              return (
+                <View key={day.key} style={styles.rangeDayCell}>
+                  {inRange ? <View style={[styles.rangeDayFill, { left: fillLeft, right: fillRight }]} /> : null}
+                  <Pressable
+                    accessibilityLabel={new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(day.date)}
+                    disabled={disabled}
+                    onPress={() => onSelectDate(day.date)}
+                    style={[
+                      styles.rangeDayButton,
+                      active ? styles.rangeDayButtonActive : null,
+                      !day.inMonth ? styles.rangeDayOutside : null,
+                      disabled ? styles.rangeDayDisabled : null,
+                    ]}
+                  >
+                    <Text style={[styles.rangeDayText, active ? styles.rangeDayTextActive : null]}>
+                      {day.date.getDate()}
+                    </Text>
+                  </Pressable>
+                </View>
+              )
+            })}
+          </View>
+        ))}
       </View>
     </View>
   )
@@ -329,6 +304,14 @@ function calendarDaysForMonth(month: Date) {
   })
 }
 
+function chunkWeeks<T>(days: T[]) {
+  const weeks: T[][] = []
+  for (let index = 0; index < days.length; index += 7) {
+    weeks.push(days.slice(index, index + 7))
+  }
+  return weeks
+}
+
 function sameDay(left: Date, right: Date) {
   return (
     left.getFullYear() === right.getFullYear() &&
@@ -338,19 +321,6 @@ function sameDay(left: Date, right: Date) {
 }
 
 const styles = StyleSheet.create({
-  checkbox: {
-    alignItems: 'center',
-    borderColor: BORDER,
-    borderRadius: 7,
-    borderWidth: 1,
-    height: 26,
-    justifyContent: 'center',
-    width: 26,
-  },
-  checkboxActive: {
-    backgroundColor: TAUPE_100,
-    borderColor: TAUPE_100,
-  },
   content: {
     gap: 22,
     paddingBottom: 36,
@@ -381,19 +351,12 @@ const styles = StyleSheet.create({
   flex: {
     flex: 1,
   },
-  header: {
-    gap: 6,
-    paddingTop: 2,
-  },
-  label: {
-    color: TEXT,
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
   calendarGrid: {
+    width: '100%',
+  },
+  calendarWeekRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    width: '100%',
   },
   monthButton: {
     alignItems: 'center',
@@ -402,18 +365,15 @@ const styles = StyleSheet.create({
     width: 34,
   },
   rangeCalendar: {
-    backgroundColor: SURFACE,
-    borderColor: BORDER,
-    borderRadius: 18,
-    borderWidth: 1,
+    marginTop: 8,
     overflow: 'hidden',
-    padding: 10,
+    width: '100%',
   },
   rangeCalendarHeader: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   rangeCalendarTitle: {
     color: TEXT,
@@ -429,21 +389,21 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   rangeDayButtonActive: {
-    backgroundColor: TAUPE_300,
+    backgroundColor: PRIMARY_COLOR,
   },
   rangeDayCell: {
     alignItems: 'center',
+    flex: 1,
     height: 42,
     justifyContent: 'center',
     position: 'relative',
-    width: `${100 / 7}%`,
   },
   rangeDayDisabled: {
     opacity: 0.24,
   },
   rangeDayFill: {
-    backgroundColor: 'rgba(216,210,208,0.18)',
-    height: 30,
+    backgroundColor: PRIMARY_COLOR_SOFT,
+    height: 34,
     left: 0,
     position: 'absolute',
     right: 0,
@@ -452,21 +412,21 @@ const styles = StyleSheet.create({
     opacity: 0.34,
   },
   rangeDayText: {
-    color: MUTED,
+    color: TEXT,
     fontSize: 16,
     fontWeight: '600',
   },
   rangeDayTextActive: {
-    color: TAUPE_950,
+    color: PRIMARY_FOREGROUND_COLOR,
     fontWeight: '800',
   },
   saveButton: {
     alignItems: 'center',
-    backgroundColor: TAUPE_300,
-    borderRadius: 16,
+    backgroundColor: PRIMARY_COLOR,
+    borderRadius: 999,
     minHeight: 56,
     justifyContent: 'center',
-    shadowColor: TAUPE_700,
+    shadowColor: PRIMARY_COLOR,
     shadowOffset: { width: 0, height: 12 },
     shadowOpacity: 0.25,
     shadowRadius: 24,
@@ -476,38 +436,13 @@ const styles = StyleSheet.create({
     shadowOpacity: 0,
   },
   saveButtonText: {
-    color: TAUPE_950,
+    color: PRIMARY_FOREGROUND_COLOR,
     fontSize: 17,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   screen: {
     backgroundColor: SCREEN,
     flex: 1,
-  },
-  subtitle: {
-    color: MUTED,
-    fontSize: 16,
-    lineHeight: 22,
-  },
-  title: {
-    color: TEXT,
-    fontSize: 34,
-    fontWeight: '800',
-    letterSpacing: 0,
-    lineHeight: 39,
-  },
-  toggleRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 12,
-    minHeight: 38,
-  },
-  toggleText: {
-    color: TEXT,
-    flex: 1,
-    fontSize: 17,
-    fontWeight: '700',
-    lineHeight: 23,
   },
   weekdayRow: {
     flexDirection: 'row',

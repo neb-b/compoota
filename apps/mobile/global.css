@@ -1,17 +1,20 @@
-@import "tailwindcss/theme.css" layer(theme);
-@import "tailwindcss/preflight.css" layer(base);
-@import "tailwindcss/utilities.css";
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/preflight.css' layer(base);
+@import 'tailwindcss/utilities.css';
 
-@import "nativewind/theme";
+@import 'nativewind/theme';
 
 @theme {
-  --font-display: "OcclusionGrotesqueYear3";
+  --font-display: 'OcclusionGrotesqueYear3';
   --color-compoota-light: var(--color-taupe-100);
   --color-compoota-dark: var(--color-taupe-950);
   --color-compoota-text-light: var(--color-taupe-950);
   --color-compoota-text-dark: var(--color-taupe-50);
   --color-compoota-muted-light: var(--color-taupe-600);
   --color-compoota-muted-dark: var(--color-taupe-300);
+  --color-compoota-primary: var(--color-lime-400); /* oklch(45% 0.09 224); */
+  --color-compoota-primary-soft: color-mix(in oklab, var(--color-compoota-primary) 18%, transparent);
+  --color-compoota-primary-foreground: var(--color-taupe-50);
   --color-compoota-action-light: var(--color-taupe-700);
   --color-compoota-action-dark: var(--color-taupe-300);
   --color-compoota-sidebar: #ffffff;

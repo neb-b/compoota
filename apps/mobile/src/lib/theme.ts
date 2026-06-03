@@ -1,3 +1,8 @@
+export const PRIMARY_COLOR = '#005f7a'
+export const PRIMARY_COLOR_SOFT = 'rgba(0,95,122,0.18)'
+export const PRIMARY_FOREGROUND_COLOR = '#fbfaf9'
+export const PRIMARY_TEXT_COLOR = '#a5f3fc'
+
 export function createColors(isDark: boolean) {
   return {
     background: isDark ? '#0c0a09' : '#f3f1f1',
