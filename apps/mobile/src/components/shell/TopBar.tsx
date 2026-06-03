@@ -44,31 +44,27 @@ export function TopBar({
       {activeScreen === 'home' ? (
         <>
           <View className="h-[46px] w-[46px]" pointerEvents="none" />
-          <View className="h-[46px] w-[200px] flex-row items-center justify-center overflow-hidden rounded-[23px] p-1">
-            <GlassSurface
-              colorScheme={isDark ? 'dark' : 'light'}
-              enabled={liquidGlassEnabled}
-              isInteractive
-              style={[
-                StyleSheet.absoluteFillObject,
-                styles.tabBarGlass,
-                {
-                  backgroundColor: liquidGlassEnabled
-                    ? 'transparent'
-                    : isDark
-                      ? 'rgba(24,24,24,0.82)'
-                      : 'rgba(255,255,255,0.82)',
-                  borderColor: liquidGlassEnabled
-                    ? isDark
-                      ? 'rgba(255,255,255,0.22)'
-                      : 'rgba(255,255,255,0.72)'
-                    : colors.border,
-                },
-              ]}
-              tintColor={colors.glassTint}
-            >
-              <View />
-            </GlassSurface>
+          <GlassSurface
+            colorScheme={isDark ? 'dark' : 'light'}
+            enabled={liquidGlassEnabled}
+            isInteractive
+            style={[
+              styles.feedViewGlass,
+              {
+                backgroundColor: liquidGlassEnabled
+                  ? 'transparent'
+                  : isDark
+                    ? 'rgba(24,24,24,0.82)'
+                    : 'rgba(255,255,255,0.82)',
+                borderColor: liquidGlassEnabled
+                  ? isDark
+                    ? 'rgba(255,255,255,0.22)'
+                    : 'rgba(255,255,255,0.72)'
+                  : colors.border,
+              },
+            ]}
+            tintColor={colors.glassTint}
+          >
             <Animated.View
               className="absolute left-1 top-1 h-[38px] w-[96px] rounded-full"
               style={[
@@ -95,7 +91,7 @@ export function TopBar({
                 </Text>
               </Pressable>
             ))}
-          </View>
+          </GlassSurface>
           <IconButton
             accessibilityLabel="Add event"
             colors={colors}
@@ -198,6 +194,21 @@ function IconButton({
 }
 
 const styles = StyleSheet.create({
+  feedViewGlass: {
+    width: 200,
+    height: 46,
+    borderRadius: 23,
+    borderWidth: StyleSheet.hairlineWidth,
+    shadowColor: '#6f6f68',
+    shadowOpacity: 0.14,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 4,
+    overflow: 'hidden',
+  },
   iconGlass: {
     flex: 1,
     borderRadius: 23,

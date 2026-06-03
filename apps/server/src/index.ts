@@ -23,7 +23,8 @@ import {
   refreshFeedForDevice,
   setFeedFeedback,
   startFeedScheduler,
-  updateFeedPreferences
+  updateFeedPreferences,
+  updateManualFeedItem
 } from "./feed.js";
 import { type CommandActivity, runHermesCommand } from "./hermes.js";
 import { handleStructuredIntent } from "./intents.js";
@@ -49,7 +50,7 @@ import {
 import { setupPageHtml } from "./setup-page.js";
 
 const pairSchema = z.object({
-  pairingCode: z.string().regex(/^\d{6}$/),
+  pairingCode: z.string().regex(/^\d{6}$/).optional(),
   deviceName: z.string().trim().min(1).max(80),
   expoPushToken: z.string().trim().max(512).optional()
 });
@@ -628,6 +629,26 @@ function createServer(config: Config, db: Database) {
     }
   });
 
+  app.put("/feed/items/:id", async (request, reply) => {
+    const device = verifyDeviceToken(request, db, config);
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = validateBody(manualFeedItemSchema, request.body);
+    try {
+      const item = updateManualFeedItem(db, device.household_id, params.id, body);
+      if (!item) {
+        reply.status(404).send({ error: "Personal event not found" });
+        return;
+      }
+      return {
+        item,
+        items: listFeedItems(db, device.household_id)
+      };
+    } catch (error) {
+      reply.status(400).send({ error: errorMessage(error) });
+      return;
+    }
+  });
+
   app.post("/events", async (request, reply) => {
     const device = verifyDeviceToken(request, db, config);
     const body = validateBody(manualFeedItemSchema, request.body);
@@ -793,15 +814,19 @@ function createServer(config: Config, db: Database) {
     }
   }, async (request, reply) => {
     const body = validateBody(pairSchema, request.body);
-    const codeHash = hashSecret(body.pairingCode, config.tokenHashSecret);
-    const pairingCode = db
-      .prepare("SELECT * FROM pairing_codes WHERE code_hash = ?")
-      .get(codeHash) as PairingCodeRow | undefined;
+    const pairingCode = body.pairingCode
+      ? (db
+          .prepare("SELECT * FROM pairing_codes WHERE code_hash = ?")
+          .get(hashSecret(body.pairingCode, config.tokenHashSecret)) as PairingCodeRow | undefined)
+      : null;
 
-    if (!pairingCode || pairingCode.used_at || Date.parse(pairingCode.expires_at) <= Date.now()) {
-      reply.status(400).send({ error: "Invalid or expired pairing code" });
-      return;
-    }
+    if (
+      body.pairingCode &&
+      (!pairingCode || pairingCode.used_at || Date.parse(pairingCode.expires_at) <= Date.now())
+    ) {
+        reply.status(400).send({ error: "Invalid or expired pairing code" });
+        return;
+      }
 
     const deviceId = randomUUID();
     const deviceToken = createDeviceToken();
@@ -809,13 +834,15 @@ function createServer(config: Config, db: Database) {
     const tokenHash = hashSecret(deviceToken, config.tokenHashSecret);
 
     const createDevice = db.transaction(() => {
-      const result = db.prepare("UPDATE pairing_codes SET used_at = ? WHERE id = ? AND used_at IS NULL").run(
-        createdAt,
-        pairingCode.id
-      );
+      if (pairingCode) {
+        const result = db.prepare("UPDATE pairing_codes SET used_at = ? WHERE id = ? AND used_at IS NULL").run(
+          createdAt,
+          pairingCode.id
+        );
 
-      if (result.changes !== 1) {
-        throw httpError("Invalid or expired pairing code", 400);
+        if (result.changes !== 1) {
+          throw httpError("Invalid or expired pairing code", 400);
+        }
       }
 
       db.prepare(

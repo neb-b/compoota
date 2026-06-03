@@ -126,6 +126,48 @@ export function useCreateFeedEventMutation(connection: Connection | null) {
   })
 }
 
+export function useUpdateFeedEventMutation(connection: Connection | null) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({
+      itemId,
+      ...body
+    }: {
+      itemId: string
+      startsAt: string
+      endsAt?: string | null
+      allDay: boolean
+      text: string
+      remindOneWeekBefore: boolean
+    }) => {
+      const data = await requestJson<{ items?: unknown; item?: unknown }>(`/feed/items/${itemId}`, {
+        connection,
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const items = parseFeedItems(data.items)
+      if (items.length) {
+        return items
+      }
+      return parseFeedItems(data.item ? [data.item] : [])
+    },
+    onSuccess: (items) => {
+      if (!items.length) {
+        return
+      }
+      queryClient.setQueryData(feedQueryKey(connection), (current?: FeedPayload) =>
+        current
+          ? {
+              ...current,
+              items: items.length > 1 ? items : sortFeedItems(current.items.map((item) => (item.id === items[0].id ? items[0] : item))),
+            }
+          : { items, preferences: null, run: null },
+      )
+    },
+  })
+}
+
 export async function clearFeed(connection: Connection) {
   await request('/feed/clear', {
     connection,

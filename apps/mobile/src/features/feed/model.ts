@@ -93,7 +93,6 @@ export function formatFeedDate(item: FeedItem): string {
   }
 
   const dateFormat = new Intl.DateTimeFormat(undefined, {
-    weekday: 'short',
     month: 'short',
     day: 'numeric',
   })

@@ -467,6 +467,56 @@ export function createManualFeedItem(
   return item;
 }
 
+export function updateManualFeedItem(
+  db: Database,
+  householdId: string,
+  itemId: string,
+  input: ManualFeedItemInput
+): FeedItemResponse | null {
+  const existing = db
+    .prepare(
+      "SELECT * FROM events WHERE household_id = ? AND id = ? AND source_url LIKE 'compoota://personal-event/%'"
+    )
+    .get(householdId, itemId) as FeedItemRow | undefined;
+  if (!existing) {
+    return null;
+  }
+
+  const startsAt = parseManualEventDate(input.startsAt);
+  const endsAt = parseOptionalManualEventDate(input.endsAt, startsAt);
+  const text = input.text.trim();
+
+  if (!text) {
+    throw new Error("Enter event text.");
+  }
+
+  const hadPendingReminder =
+    (
+      db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM reminders WHERE household_id = ? AND source_type = 'event' AND source_id = ? AND status = 'pending'"
+        )
+        .get(householdId, itemId) as { count: number }
+    ).count > 0;
+  const now = nowIso();
+  db.prepare(
+    `UPDATE events
+     SET title = ?, starts_at = ?, ends_at = ?, is_all_day = ?, updated_at = ?
+     WHERE household_id = ? AND id = ?`
+  ).run(text, startsAt, endsAt, input.allDay ? 1 : 0, now, householdId, itemId);
+
+  db.prepare(
+    "DELETE FROM reminders WHERE household_id = ? AND source_type = 'event' AND source_id = ? AND status = 'pending'"
+  ).run(householdId, itemId);
+
+  const row = db.prepare("SELECT * FROM events WHERE household_id = ? AND id = ?").get(householdId, itemId) as FeedItemRow;
+  const item = feedItemResponse(row, null);
+  if (input.remindOneWeekBefore || hadPendingReminder) {
+    createReminderForEvent(db, householdId, item);
+  }
+  return item;
+}
+
 function persistFeedItems(
   db: Database,
   config: Config,

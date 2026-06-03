@@ -5,15 +5,15 @@ export default function TabsLayout() {
     <Stack
       screenOptions={{
         animation: 'slide_from_right',
-        contentStyle: { backgroundColor: '#111111' },
+        contentStyle: { backgroundColor: '#0c0a09' },
         fullScreenGestureEnabled: true,
         gestureEnabled: true,
         headerBackTitle: 'Cancel',
         headerShadowVisible: false,
         headerShown: false,
-        headerStyle: { backgroundColor: '#111111' },
-        headerTintColor: '#3b82f6',
-        headerTitleStyle: { color: '#f8fafc' },
+        headerStyle: { backgroundColor: '#0c0a09' },
+        headerTintColor: '#d8d2d0',
+        headerTitleStyle: { color: '#fbfaf9' },
       }}
     >
       <Stack.Screen name="index" />

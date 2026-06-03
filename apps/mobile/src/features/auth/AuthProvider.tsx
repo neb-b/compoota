@@ -4,7 +4,7 @@ import { Platform } from 'react-native'
 
 import { loadFeedPreferences, saveFeedPreferences } from '../feed/api'
 import { parseMessages } from '../assistant/model'
-import { request, requestJson, normalizeServerUrl, userFacingError } from '../../lib/api/client'
+import { normalizeServerUrl, request, requestJson, setUnauthorizedHandler, userFacingError } from '../../lib/api/client'
 import {
   APPEARANCE_KEY,
   DEV_DEVICE_ID,
@@ -37,7 +37,7 @@ type AuthContextValue = {
   setHomeLocation: (value: string) => void
   setServerUrl: (value: string) => void
   initialMessages: Message[]
-  pair: (pairingCode: string) => Promise<FeedPreferences | null>
+  pair: () => Promise<FeedPreferences | null>
   persistMessages: (messages: Message[]) => Promise<void>
   resetConnection: () => Promise<void>
   updatePushToken: () => Promise<void>
@@ -83,6 +83,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [pairing, setPairing] = useState(false)
   const [error, setError] = useState('')
+
+  const clearConnection = useCallback(async (message = '') => {
+    await Promise.all([
+      AsyncStorage.removeItem(STORAGE_KEY),
+      AsyncStorage.removeItem(FEED_REFRESH_REQUEST_KEY),
+    ])
+    setConnection(null)
+    setInitialMessages([])
+    setError(message)
+    setServerUrl((current) => current || (__DEV__ ? defaultServerUrl() : ''))
+  }, [])
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      clearConnection('This device is unauthorized. Connect again to continue.').catch(() => undefined)
+    })
+    return () => setUnauthorizedHandler(null)
+  }, [clearConnection])
 
   useEffect(() => {
     async function loadSession() {
@@ -154,19 +172,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const pair = useCallback(
-    async (pairingCode: string) => {
+    async () => {
       setError('')
       setPairing(true)
       try {
         const normalizedUrl = normalizeServerUrl(serverUrl)
-        const cleanedCode = pairingCode.trim()
         const cleanedName =
           deviceName.trim() ||
           Platform.select({ ios: 'iPhone', android: 'Android', default: 'compoota device' })
-
-        if (!/^\d{6}$/.test(cleanedCode)) {
-          throw new Error('Enter the 6-digit pairing code from the setup page.')
-        }
 
         await request(`${normalizedUrl}/health`, { method: 'GET', timeoutMs: 6000 })
         const expoPushToken = await registerForPushToken()
@@ -174,7 +187,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            pairingCode: cleanedCode,
             deviceName: cleanedName,
             expoPushToken,
           }),

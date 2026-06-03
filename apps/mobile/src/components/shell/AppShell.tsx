@@ -55,7 +55,7 @@ import {
   useFeedQuery,
   useRefreshFeedMutation,
 } from '../../features/feed/api'
-import { sortFeedItems } from '../../features/feed/model'
+import { isPersonalFeedItem, sortFeedItems } from '../../features/feed/model'
 import { mergeActivity, messageId, PENDING_ACTIVITY } from '../../features/assistant/model'
 import { useCompleteMaintenanceMutation, useMaintenanceQuery } from '../../features/maintenance/api'
 import { removeMediaFromMessages, useDeleteMediaMutation, useMediaQuery } from '../../features/media/api'
@@ -86,7 +86,6 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
 
   const [activeScreen, setActiveScreen] = useState<ActiveScreen>(screen)
   const [displayedScreen, setDisplayedScreen] = useState<ActiveScreen>(screen)
-  const [pairingCode, setPairingCode] = useState('')
   const [locating, setLocating] = useState(false)
   const [command, setCommand] = useState('')
   const [messages, setMessages] = useState<Message[]>(auth.initialMessages)
@@ -124,7 +123,7 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
   const feedItems = feedData?.items ?? []
   const feedPreferences = feedData?.preferences ?? null
   const feedRun = feedData?.run ?? null
-  const visibleFeedItems = feedItems
+  const visibleFeedItems = feedItems.filter(isPersonalFeedItem)
   const feedRefreshInProgress = feedQuery.isLoading || refreshFeedMutation.isPending || feedRun?.status === 'running'
   const feedEmptyTitle =
     feedRefreshInProgress
@@ -223,7 +222,6 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
       if (cancelled) {
         return
       }
-      queryClient.setQueryData(feedQueryKey(auth.connection), { items: [], preferences: null, run: null })
       setFeedAutoRefreshAttempted(true)
       refreshFeedMutation.mutate()
     }
@@ -379,8 +377,7 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
 
   async function connect() {
     try {
-      await auth.pair(pairingCode)
-      setPairingCode('')
+      await auth.pair()
       setMessages([])
       setPendingMedia([])
       setFeedAutoRefreshAttempted(false)
@@ -781,11 +778,9 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
         onConnect={connect}
         onDeviceNameChange={auth.setDeviceName}
         onLocationChange={auth.setHomeLocation}
-        onPairingCodeChange={setPairingCode}
         onServerUrlChange={auth.setServerUrl}
         onUseCurrentLocation={useCurrentLocation}
         pairing={auth.pairing}
-        pairingCode={pairingCode}
         serverUrl={auth.serverUrl}
       />
     )

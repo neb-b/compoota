@@ -15,11 +15,9 @@ type ConnectScreenProps = {
   onConnect: () => void
   onDeviceNameChange: (value: string) => void
   onLocationChange: (value: string) => void
-  onPairingCodeChange: (value: string) => void
   onServerUrlChange: (value: string) => void
   onUseCurrentLocation: () => void
   pairing: boolean
-  pairingCode: string
   serverUrl: string
 }
 
@@ -32,11 +30,9 @@ export function ConnectScreen({
   onConnect,
   onDeviceNameChange,
   onLocationChange,
-  onPairingCodeChange,
   onServerUrlChange,
   onUseCurrentLocation,
   pairing,
-  pairingCode,
   serverUrl,
 }: ConnectScreenProps) {
   return (
@@ -51,7 +47,7 @@ export function ConnectScreen({
               compoota
             </Text>
             <Text className="max-w-[340px] text-[17px] leading-6" style={{ color: colors.secondaryText }}>
-              choose a house-server, then enter a fresh pairing code
+              choose a house-server to connect this device
             </Text>
           </View>
 
@@ -84,25 +80,6 @@ export function ConnectScreen({
                 className="min-h-[50px] rounded-2xl px-3.5 text-base"
                 style={{ backgroundColor: colors.input, borderColor: colors.border, borderWidth: 1, color: colors.text }}
                 value={serverUrl}
-              />
-            </Field>
-
-            <Field label="pairing code" colors={colors}>
-              <TextInput
-                keyboardType="number-pad"
-                maxLength={6}
-                onChangeText={onPairingCodeChange}
-                placeholder="123456"
-                placeholderTextColor={colors.placeholder}
-                className="min-h-[50px] rounded-2xl px-3.5 text-base"
-                style={{
-                  backgroundColor: colors.input,
-                  borderColor: colors.border,
-                  borderWidth: 1,
-                  color: colors.text,
-                  fontVariant: ['tabular-nums'],
-                }}
-                value={pairingCode}
               />
             </Field>
 

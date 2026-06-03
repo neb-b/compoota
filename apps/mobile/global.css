@@ -6,14 +6,14 @@
 
 @theme {
   --font-display: "OcclusionGrotesqueYear3";
-  --color-compoota-light: #f8f8f7;
-  --color-compoota-dark: #111111;
-  --color-compoota-text-light: #171717;
-  --color-compoota-text-dark: #f6f6f4;
-  --color-compoota-muted-light: #686863;
-  --color-compoota-muted-dark: #a7a7a2;
-  --color-compoota-action-light: #0ea5e9;
-  --color-compoota-action-dark: #7dd3fc;
+  --color-compoota-light: var(--color-taupe-100);
+  --color-compoota-dark: var(--color-taupe-950);
+  --color-compoota-text-light: var(--color-taupe-950);
+  --color-compoota-text-dark: var(--color-taupe-50);
+  --color-compoota-muted-light: var(--color-taupe-600);
+  --color-compoota-muted-dark: var(--color-taupe-300);
+  --color-compoota-action-light: var(--color-taupe-700);
+  --color-compoota-action-dark: var(--color-taupe-300);
   --color-compoota-sidebar: #ffffff;
   --spacing-hairline: hairlineWidth();
 }

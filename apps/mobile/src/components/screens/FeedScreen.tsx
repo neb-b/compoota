@@ -1,13 +1,19 @@
 import Constants from 'expo-constants'
+import { useRouter } from 'expo-router'
 import React from 'react'
-import { ActivityIndicator, Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import {
+  ActivityIndicator,
+  Image,
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
-import Animated, {
-  interpolate,
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from 'react-native-reanimated'
+import Animated, { interpolate, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 
 import {
   canOpenFeedItem,
@@ -21,8 +27,8 @@ import { AppleIcon } from '../ui'
 
 const FEED_ROW_ACTION_WIDTH = 78
 const FEED_ROW_ACTIONS_WIDTH = FEED_ROW_ACTION_WIDTH * 2
-const FEED_ROW_SAVED_CYAN = '#a5f3fc'
-const FEED_ROW_PERSONAL_AMBER = '#fde68a'
+const FEED_ROW_SAVED_EMERALD = '#34d399'
+const FEED_ROW_PERSONAL_VIOLET = '#ddd6fe'
 const FEED_ROW_CALENDAR_CYAN = '#67e8f9'
 const FEED_ROW_SPRING = {
   damping: 25,
@@ -105,7 +111,10 @@ export function FeedScreen({
           <Text className="text-center text-xl font-extrabold" style={{ color: colors.text }}>
             {emptyTitle}
           </Text>
-          <Text className="mt-2 text-center text-[15px] leading-[22px]" style={{ color: colors.secondaryText }}>
+          <Text
+            className="mt-2 text-center text-[15px] leading-[22px]"
+            style={{ color: colors.secondaryText }}
+          >
             {emptyText}
           </Text>
         </View>
@@ -116,13 +125,13 @@ export function FeedScreen({
 
 function FeedCalendar({ colors, items }: { colors: AppColors; items: FeedItem[] }) {
   const months = React.useMemo(() => calendarMonthsForItems(items), [items])
-  const [preview, setPreview] = React.useState<{ date: Date; items: FeedItem[]; weekDay: number } | null>(null)
+  const [preview, setPreview] = React.useState<{ date: Date; items: FeedItem[]; weekDay: number } | null>(
+    null,
+  )
 
   return (
     <View className="w-full max-w-[560px] self-center gap-7">
-      {preview ? (
-        <Pressable className="absolute inset-0 z-[5]" onPress={() => setPreview(null)} />
-      ) : null}
+      {preview ? <Pressable className="absolute inset-0 z-[5]" onPress={() => setPreview(null)} /> : null}
       {preview ? (
         <View style={[styles.calendarScreenPreview, calendarScreenPreviewPosition(preview.weekDay)]}>
           <CalendarPopoverCard colors={colors} date={preview.date} items={preview.items} />
@@ -154,6 +163,7 @@ function FeedCalendar({ colors, items }: { colors: AppColors; items: FeedItem[] 
                   inMonth={day.inMonth}
                   items={dayItems}
                   key={day.key}
+                  rangeSegment={calendarRangeSegment(dayItems, day.date)}
                   onPreview={setPreview}
                   weekDay={day.weekDay}
                 />
@@ -172,6 +182,7 @@ function CalendarDay({
   inMonth,
   items,
   onPreview,
+  rangeSegment,
   weekDay,
 }: {
   colors: AppColors
@@ -179,11 +190,11 @@ function CalendarDay({
   inMonth: boolean
   items: FeedItem[]
   onPreview: (preview: { date: Date; items: FeedItem[]; weekDay: number }) => void
+  rangeSegment: CalendarRangeSegment | null
   weekDay: number
 }) {
   const [presented, setPresented] = React.useState(false)
   const hasItems = items.length > 0
-  const hasRange = items.some((item) => isRangeEvent(item))
   const expoPopover = getExpoSwiftUIPopover()
 
   const cell = (
@@ -201,20 +212,28 @@ function CalendarDay({
       </Text>
       <View className="mt-1 h-2.5 flex-row items-center justify-center gap-1">
         {hasItems ? (
-          hasRange ? (
+          rangeSegment ? (
             <View
               style={[
-                styles.calendarRangeMark,
-                { backgroundColor: calendarItemColor(items[0]) },
+                styles.calendarRangeSegment,
+                rangeSegment.connectsPrevious
+                  ? styles.calendarRangeSegmentConnectedLeft
+                  : styles.calendarRangeSegmentStart,
+                rangeSegment.connectsNext
+                  ? styles.calendarRangeSegmentConnectedRight
+                  : styles.calendarRangeSegmentEnd,
+                { backgroundColor: rangeSegment.color },
               ]}
             />
           ) : (
-            items.slice(0, 3).map((item) => (
-              <View
-                key={item.id}
-                style={[styles.calendarDot, { backgroundColor: calendarItemColor(item) }]}
-              />
-            ))
+            items
+              .slice(0, 3)
+              .map((item) => (
+                <View
+                  key={item.id}
+                  style={[styles.calendarDot, { backgroundColor: calendarItemColor(item) }]}
+                />
+              ))
           )
         ) : null}
       </View>
@@ -254,15 +273,9 @@ function CalendarDay({
   )
 }
 
-function CalendarPopoverCard({
-  colors,
-  date,
-  items,
-}: {
-  colors: AppColors
-  date: Date
-  items: FeedItem[]
-}) {
+function CalendarPopoverCard({ colors, date, items }: { colors: AppColors; date: Date; items: FeedItem[] }) {
+  const router = useRouter()
+
   return (
     <View style={styles.calendarPopoverCard}>
       <Text className="text-[13px]" style={{ color: colors.secondaryText }}>
@@ -278,12 +291,28 @@ function CalendarPopoverCard({
               className="gap-1 active:opacity-70"
               key={item.id}
               onPress={() => {
+                if (personal) {
+                  router.push({
+                    pathname: '/new-event',
+                    params: {
+                      eventId: item.id,
+                      text: item.title,
+                      startsAt: item.startsAt,
+                      endsAt: item.endsAt ?? '',
+                    },
+                  })
+                  return
+                }
                 if (canOpenFeedItem(item)) {
                   Linking.openURL(item.sourceUrl).catch(() => undefined)
                 }
               }}
             >
-              <Text className="text-[16px] font-semibold leading-[20px]" numberOfLines={2} style={{ color: accent }}>
+              <Text
+                className="text-[16px] font-semibold leading-[20px]"
+                numberOfLines={2}
+                style={{ color: accent }}
+              >
                 {item.title}
               </Text>
               {item.allDay ? null : (
@@ -315,12 +344,14 @@ function FeedRow({
   onDismiss: () => void
   onSave: () => void
 }) {
+  const router = useRouter()
   const personal = isPersonalFeedItem(item)
   const meta = personal ? '' : formatFeedMeta(item)
+  const proximity = formatFeedProximity(item)
   const saved = personal || item.feedback === 'save' || item.feedback === 'like'
   const rowBackgroundColor = personal ? 'rgba(0,0,0,0.035)' : colors.background
-  const savedTextColor = personal ? FEED_ROW_PERSONAL_AMBER : FEED_ROW_SAVED_CYAN
-  const rowTextColor = saved ? savedTextColor : colors.text
+  const savedTextColor = personal ? FEED_ROW_PERSONAL_VIOLET : FEED_ROW_SAVED_EMERALD
+  const rowTextColor = personal ? colors.text : saved ? savedTextColor : colors.text
   const rowDateTextColor = colors.secondaryText
   const translateX = useSharedValue(0)
   const gestureStartX = useSharedValue(0)
@@ -328,7 +359,11 @@ function FeedRow({
     transform: [{ translateX: translateX.value }],
   }))
   const actionsStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(-translateX.value, [0, FEED_ROW_ACTIONS_WIDTH * 0.45, FEED_ROW_ACTIONS_WIDTH], [0, 1, 1]),
+    opacity: interpolate(
+      -translateX.value,
+      [0, FEED_ROW_ACTIONS_WIDTH * 0.45, FEED_ROW_ACTIONS_WIDTH],
+      [0, 1, 1],
+    ),
   }))
 
   const closeActions = React.useCallback(() => {
@@ -363,7 +398,6 @@ function FeedRow({
 
   return (
     <View
-      className={personal ? '-mx-2.5 overflow-hidden rounded-[18px]' : 'overflow-hidden'}
       style={{
         backgroundColor: personal ? rowBackgroundColor : 'transparent',
       }}
@@ -376,7 +410,7 @@ function FeedRow({
           accessibilityLabel="Save feed item"
           className="items-center justify-center gap-1 active:opacity-85"
           onPress={triggerSave}
-          style={[styles.feedRowAction, { backgroundColor: saved ? colors.action : '#007aff' }]}
+          style={[styles.feedRowAction, { backgroundColor: saved ? colors.action : colors.accent }]}
         >
           <AppleIcon color="#ffffff" name={saved ? 'bookmark.fill' : 'bookmark'} size={21} />
           <Text className="text-xs font-semibold" style={{ color: '#ffffff' }}>
@@ -401,10 +435,24 @@ function FeedRow({
           <Pressable
             accessibilityLabel={`Open ${item.title}`}
             accessibilityRole="link"
-            className={personal ? 'gap-[7px] px-2.5 py-6 active:opacity-70' : 'gap-[7px] border-b py-6 active:opacity-70'}
+            className={
+              personal ? 'gap-[5px] px-2.5 pt-4 active:opacity-70' : 'gap-[5px] pt-4 active:opacity-70'
+            }
             onPress={() => {
               if (translateX.value < -4) {
                 closeActions()
+                return
+              }
+              if (personal) {
+                router.push({
+                  pathname: '/new-event',
+                  params: {
+                    eventId: item.id,
+                    text: item.title,
+                    startsAt: item.startsAt,
+                    endsAt: item.endsAt ?? '',
+                  },
+                })
                 return
               }
               if (canOpenFeedItem(item)) {
@@ -413,7 +461,6 @@ function FeedRow({
             }}
             style={{
               backgroundColor: rowBackgroundColor,
-              borderBottomColor: personal ? 'transparent' : 'rgba(0,0,0,0.10)',
             }}
           >
             {item.imageUrl ? (
@@ -425,19 +472,43 @@ function FeedRow({
                 style={{ backgroundColor: 'rgba(0,0,0,0.06)' }}
               />
             ) : null}
-            <View className="flex-row items-center gap-2">
-              <Text className="text-[15px] leading-[21px]" style={{ color: rowDateTextColor }}>
-                {formatFeedDate(item)}
-              </Text>
+            <View className="flex-row items-start gap-1.5">
+              <View className="w-[58px]">
+                <Text
+                  className="text-[14px] font-normal leading-[19px]"
+                  numberOfLines={1}
+                  style={{ color: rowDateTextColor }}
+                >
+                  {formatFeedDate(item)}
+                </Text>
+              </View>
+              <View className="flex-1 gap-[3px] border-b pb-4" style={{ borderBottomColor: colors.border }}>
+                {proximity ? (
+                  <Text
+                    className="text-[14px] font-normal leading-[19px]"
+                    style={{ color: colors.subtleText }}
+                  >
+                    {proximity}
+                  </Text>
+                ) : null}
+                <Text className="text-[14px] font-normal leading-[19px]" style={{ color: rowTextColor }}>
+                  {item.title}
+                </Text>
+              </View>
             </View>
-            <View className="flex-row items-start">
-              <Text className="flex-1 text-[22px] font-semibold leading-[27px]" style={{ color: rowTextColor }}>
-                {item.title}
+            {meta ? (
+              <Text
+                className="text-[13px] font-normal leading-[18px]"
+                style={{ color: colors.secondaryText }}
+              >
+                {meta}
               </Text>
-            </View>
-            {meta ? <Text className="text-[15px] leading-[21px]" style={{ color: colors.secondaryText }}>{meta}</Text> : null}
+            ) : null}
             {item.summary ? (
-              <Text className="text-[15px] leading-[22px]" style={{ color: colors.secondaryText }}>
+              <Text
+                className="text-[13px] font-normal leading-[19px]"
+                style={{ color: colors.secondaryText }}
+              >
                 {item.summary}
               </Text>
             ) : null}
@@ -498,12 +569,38 @@ function isRangeEvent(item: FeedItem) {
   return dateKey(new Date(item.startsAt)) !== dateKey(new Date(item.endsAt))
 }
 
+type CalendarRangeSegment = {
+  color: string
+  connectsNext: boolean
+  connectsPrevious: boolean
+}
+
+function calendarRangeSegment(items: FeedItem[], date: Date): CalendarRangeSegment | null {
+  const item = items.find((candidate) => isRangeEvent(candidate))
+  if (!item) {
+    return null
+  }
+
+  const start = startOfDay(new Date(item.startsAt))
+  const end = startOfDay(new Date(item.endsAt ?? item.startsAt))
+  const day = startOfDay(date)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return null
+  }
+
+  return {
+    color: calendarItemColor(item),
+    connectsPrevious: day > start && day.getDay() !== 0,
+    connectsNext: day < end && day.getDay() !== 6,
+  }
+}
+
 function calendarItemColor(item: FeedItem) {
   if (isPersonalFeedItem(item)) {
-    return FEED_ROW_PERSONAL_AMBER
+    return FEED_ROW_PERSONAL_VIOLET
   }
   if (item.feedback === 'save' || item.feedback === 'like') {
-    return FEED_ROW_SAVED_CYAN
+    return FEED_ROW_SAVED_EMERALD
   }
   return FEED_ROW_CALENDAR_CYAN
 }
@@ -527,6 +624,28 @@ function formatFeedTime(item: FeedItem) {
   }
 
   return timeFormat.format(start)
+}
+
+function formatFeedProximity(item: FeedItem) {
+  const start = startOfDay(new Date(item.startsAt))
+  if (Number.isNaN(start.getTime())) {
+    return ''
+  }
+
+  const today = startOfDay(new Date())
+  const daysAway = Math.round((start.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+  if (daysAway < 0 || daysAway > 30) {
+    return ''
+  }
+  if (daysAway === 0) {
+    return 'today'
+  }
+  if (daysAway < 14) {
+    return `${daysAway} ${daysAway === 1 ? 'day' : 'days'} away`
+  }
+
+  const weeksAway = Math.ceil(daysAway / 7)
+  return `${weeksAway} ${weeksAway === 1 ? 'week' : 'weeks'} away`
 }
 
 function calendarScreenPreviewPosition(weekDay: number) {
@@ -591,10 +710,25 @@ const styles = StyleSheet.create({
     padding: 14,
     width: 270,
   },
-  calendarRangeMark: {
-    borderRadius: 4,
+  calendarRangeSegment: {
     height: 7,
-    width: 22,
+    width: '100%',
+  },
+  calendarRangeSegmentConnectedLeft: {
+    marginLeft: -1,
+  },
+  calendarRangeSegmentConnectedRight: {
+    marginRight: -1,
+  },
+  calendarRangeSegmentEnd: {
+    borderBottomRightRadius: 4,
+    borderTopRightRadius: 4,
+    marginRight: 10,
+  },
+  calendarRangeSegmentStart: {
+    borderBottomLeftRadius: 4,
+    borderTopLeftRadius: 4,
+    marginLeft: 10,
   },
   calendarScreenPreview: {
     position: 'absolute',

@@ -16,6 +16,16 @@ export class ApiError extends Error {
   }
 }
 
+let unauthorizedHandler: (() => void) | null = null
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler
+}
+
+function handleUnauthorized() {
+  unauthorizedHandler?.()
+}
+
 export function normalizeServerUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, '')
   if (!trimmed) {
@@ -64,6 +74,9 @@ export async function request(pathOrUrl: string, options: RequestOptions = {}): 
     })
 
     if (!response.ok) {
+      if (response.status === 401) {
+        handleUnauthorized()
+      }
       throw new ApiError(await readError(response), response.status)
     }
 
@@ -182,6 +195,7 @@ export function streamCommandRequest({
       }
 
       if (xhr.status === 401) {
+        handleUnauthorized()
         fail(new Error('This device is unauthorized or revoked. Reset and pair again.'))
         return
       }
