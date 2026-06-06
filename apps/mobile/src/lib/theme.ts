@@ -3,7 +3,38 @@ export const PRIMARY_COLOR_SOFT = 'rgba(0,95,122,0.18)'
 export const PRIMARY_FOREGROUND_COLOR = '#fbfaf9'
 export const PRIMARY_TEXT_COLOR = '#a5f3fc'
 
-export function createColors(isDark: boolean) {
+export function normalizeThemeColor(value: string | null | undefined) {
+  const trimmed = value?.trim() ?? ''
+  const candidate = trimmed.startsWith('#') ? trimmed : `#${trimmed}`
+  return /^#[0-9a-fA-F]{6}$/.test(candidate) ? candidate.toLowerCase() : PRIMARY_COLOR
+}
+
+function hexToRgb(hex: string) {
+  const normalized = normalizeThemeColor(hex).slice(1)
+  return {
+    r: parseInt(normalized.slice(0, 2), 16),
+    g: parseInt(normalized.slice(2, 4), 16),
+    b: parseInt(normalized.slice(4, 6), 16),
+  }
+}
+
+function rgba(hex: string, opacity: number) {
+  const { r, g, b } = hexToRgb(hex)
+  return `rgba(${r},${g},${b},${opacity})`
+}
+
+function readableTextOn(hex: string) {
+  const { r, g, b } = hexToRgb(hex)
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+  return luminance > 0.62 ? '#0c0a09' : '#fbfaf9'
+}
+
+function primaryTextFor(isDark: boolean, primary: string) {
+  return isDark ? rgba(primary, 0.92) : primary
+}
+
+export function createColors(isDark: boolean, themeColor = PRIMARY_COLOR) {
+  const primary = normalizeThemeColor(themeColor)
   return {
     background: isDark ? '#0c0a09' : '#f3f1f1',
     text: isDark ? '#fbfaf9' : '#0c0a09',
@@ -29,6 +60,10 @@ export function createColors(isDark: boolean) {
     userBubble: isDark ? '#f3f1f1' : '#1d1816',
     userText: isDark ? '#0c0a09' : '#fbfaf9',
     error: '#d93d3d',
+    primary,
+    primaryForeground: readableTextOn(primary),
+    primarySoft: rgba(primary, 0.18),
+    primaryText: primaryTextFor(isDark, primary),
   }
 }
 

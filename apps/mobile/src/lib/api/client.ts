@@ -121,6 +121,7 @@ export function streamCommandRequest({
   media,
   onMediaStored,
   onActivity,
+  onDelta,
   onReply,
 }: {
   connection: Connection
@@ -128,6 +129,7 @@ export function streamCommandRequest({
   media?: PendingMedia[]
   onMediaStored?: (media: MessageMedia[]) => void
   onActivity: (step: ActivityStep) => void
+  onDelta?: (delta: string) => void
   onReply: (reply: string, activity?: ActivityStep[], media?: MessageMedia[]) => void
 }): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -162,6 +164,11 @@ export function streamCommandRequest({
 
         if (parsed.event === 'activity') {
           onActivity(parsed.data as ActivityStep)
+        } else if (parsed.event === 'delta') {
+          const data = parsed.data as { text?: string }
+          if (data.text) {
+            onDelta?.(data.text)
+          }
         } else if (parsed.event === 'media') {
           const data = parsed.data as { media?: unknown }
           const storedMedia = parseMediaItems(data.media)

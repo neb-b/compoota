@@ -4,6 +4,7 @@ export const STORAGE_KEY = 'compoota.connection.v1'
 export const PREFERENCES_KEY = 'compoota.connection-preferences.v1'
 export const FEED_REFRESH_REQUEST_KEY = 'compoota.feed-refresh-request.v1'
 export const APPEARANCE_KEY = 'compoota.appearance.v1'
+export const THEME_COLOR_KEY = 'compoota.theme-color.v1'
 export const MESSAGE_HISTORY_KEY_PREFIX = 'compoota.messages.v1.'
 
 export const DEV_SERVER_URL = process.env.EXPO_PUBLIC_COMPOOTA_DEV_SERVER_URL

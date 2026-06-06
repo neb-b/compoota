@@ -4,7 +4,7 @@ import { GestureDetector } from 'react-native-gesture-handler'
 import Animated from 'react-native-reanimated'
 
 import type { ActiveScreen } from '../types'
-import { PRIMARY_COLOR, type AppColors } from '../lib/theme'
+import type { AppColors } from '../lib/theme'
 import { AppleIcon, GlassSurface } from './ui'
 
 export const SIDEBAR_EDGE_HIT_SLOP = 30
@@ -27,7 +27,7 @@ const SIDEBAR_NAV_ITEMS: Array<{
   action?: 'settings'
 }> = [
   { label: 'home', screen: 'home', accessibilityLabel: 'Open home feed' },
-  // { label: 'Assistant', screen: 'assistant', accessibilityLabel: 'Open assistant', icon: 'sparkles' },
+  { label: 'chat', screen: 'chat', accessibilityLabel: 'Open chat' },
   // { label: 'Media', screen: 'media', accessibilityLabel: 'Open media', icon: 'photo.stack.fill' },
   { label: 'settings', screen: 'settings', accessibilityLabel: 'Open settings' },
   // {
@@ -37,8 +37,6 @@ const SIDEBAR_NAV_ITEMS: Array<{
   //   icon: 'wrench.and.screwdriver.fill',
   // },
 ]
-
-const SIDEBAR_ACTIVE_TEXT = PRIMARY_COLOR
 
 type AppSidebarProps = {
   activeScreen: ActiveScreen
@@ -145,7 +143,7 @@ export function AppSidebar({
                       <View className="z-[1] flex-row items-center justify-start">
                         <Text
                           className="text-3xl"
-                          style={[styles.sidebarNavText, { color: active ? SIDEBAR_ACTIVE_TEXT : colors.sidebarText }]}
+                          style={[styles.sidebarNavText, { color: active ? colors.primary : colors.sidebarText }]}
                         >
                           {item.label}
                         </Text>

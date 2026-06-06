@@ -16,9 +16,11 @@ import {
   LOCAL_SERVER_URL,
   PREFERENCES_KEY,
   STORAGE_KEY,
+  THEME_COLOR_KEY,
   messageHistoryKey,
 } from '../../lib/constants'
 import { registerForPushToken } from '../../lib/notifications'
+import { PRIMARY_COLOR, normalizeThemeColor } from '../../lib/theme'
 import type { AppearanceMode, Connection, ConnectionPreferences, FeedPreferences, Message } from '../../types'
 
 type AuthContextValue = {
@@ -30,12 +32,16 @@ type AuthContextValue = {
   isDark: boolean
   loading: boolean
   pairing: boolean
+  pairingCode: string
   serverUrl: string
   setAppearanceMode: (mode: AppearanceMode) => void
   setDeviceName: (value: string) => void
   setError: (value: string) => void
   setHomeLocation: (value: string) => void
+  setPairingCode: (value: string) => void
   setServerUrl: (value: string) => void
+  setThemeColor: (value: string) => void
+  themeColor: string
   initialMessages: Message[]
   pair: () => Promise<FeedPreferences | null>
   persistMessages: (messages: Message[]) => Promise<void>
@@ -79,6 +85,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [serverUrl, setServerUrl] = useState('')
   const [deviceName, setDeviceName] = useState('')
   const [homeLocation, setHomeLocation] = useState('')
+  const [themeColor, setThemeColorState] = useState(PRIMARY_COLOR)
+  const [pairingCode, setPairingCode] = useState('')
   const [initialMessages, setInitialMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(true)
   const [pairing, setPairing] = useState(false)
@@ -105,11 +113,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     async function loadSession() {
       try {
-        const [storedConnection, storedPreferences] = await Promise.all([
+        const [storedConnection, storedPreferences, storedThemeColor] = await Promise.all([
           AsyncStorage.getItem(STORAGE_KEY),
           AsyncStorage.getItem(PREFERENCES_KEY),
+          AsyncStorage.getItem(THEME_COLOR_KEY),
         ])
 
+        setThemeColorState(normalizeThemeColor(storedThemeColor))
         const preferences = parseStoredPreferences(storedPreferences)
         if (preferences?.serverUrl) {
           setServerUrl(preferences.serverUrl)
@@ -171,6 +181,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(APPEARANCE_KEY, 'dark').catch(() => undefined)
   }, [])
 
+  const setThemeColor = useCallback((value: string) => {
+    const nextColor = normalizeThemeColor(value)
+    setThemeColorState(nextColor)
+    AsyncStorage.setItem(THEME_COLOR_KEY, nextColor).catch(() => undefined)
+  }, [])
+
   const pair = useCallback(
     async () => {
       setError('')
@@ -183,10 +199,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         await request(`${normalizedUrl}/health`, { method: 'GET', timeoutMs: 6000 })
         const expoPushToken = await registerForPushToken()
+        const cleanedPairingCode = pairingCode.replace(/\D/g, '')
         const data = await requestJson<{ deviceId: string; deviceToken: string }>(`${normalizedUrl}/pair`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            pairingCode: cleanedPairingCode,
             deviceName: cleanedName,
             expoPushToken,
           }),
@@ -205,7 +223,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const initialFeedPreferences = homeLocation.trim()
           ? await saveFeedPreferences(nextConnection, {
               homeLocation: homeLocation.trim(),
-              radiusMiles: 30,
+              radiusMiles: 45,
             })
           : null
 
@@ -216,6 +234,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setConnection(nextConnection)
         setServerUrl(normalizedUrl)
         setDeviceName(cleanedName)
+        setPairingCode('')
         setInitialMessages([])
         return initialFeedPreferences
       } catch (err) {
@@ -226,7 +245,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setPairing(false)
       }
     },
-    [deviceName, homeLocation, serverUrl],
+    [deviceName, homeLocation, pairingCode, serverUrl],
   )
 
   const persistMessages = useCallback(
@@ -245,12 +264,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       AsyncStorage.removeItem(PREFERENCES_KEY),
       AsyncStorage.removeItem(FEED_REFRESH_REQUEST_KEY),
       AsyncStorage.removeItem(APPEARANCE_KEY),
+      AsyncStorage.removeItem(THEME_COLOR_KEY),
     ])
     setConnection(null)
     setInitialMessages([])
     setError('')
     setDeviceName('')
     setHomeLocation(__DEV__ ? DEV_ONBOARDING_LOCATION : '')
+    setThemeColorState(PRIMARY_COLOR)
+    setPairingCode('')
     setServerUrl(__DEV__ ? defaultServerUrl() : '')
   }, [])
 
@@ -286,6 +308,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
       pair,
       pairing,
+      pairingCode,
       persistMessages,
       resetConnection,
       serverUrl,
@@ -293,7 +316,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setDeviceName,
       setError,
       setHomeLocation,
+      setPairingCode,
       setServerUrl,
+      setThemeColor,
+      themeColor,
       updatePushToken,
     }),
     [
@@ -307,10 +333,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
       pair,
       pairing,
+      pairingCode,
       persistMessages,
       resetConnection,
       serverUrl,
       setAppearanceMode,
+      setThemeColor,
+      themeColor,
       updatePushToken,
     ],
   )

@@ -50,7 +50,7 @@ import {
 import { setupPageHtml } from "./setup-page.js";
 
 const pairSchema = z.object({
-  pairingCode: z.string().regex(/^\d{6}$/).optional(),
+  pairingCode: z.string().regex(/^\d{6}$/),
   deviceName: z.string().trim().min(1).max(80),
   expoPushToken: z.string().trim().max(512).optional()
 });
@@ -149,6 +149,14 @@ function commandActivity(id: string, label: string, detail?: string): CommandAct
 function sendSse(reply: { raw: NodeJS.WritableStream }, event: string, data: unknown): void {
   reply.raw.write(`event: ${event}\n`);
   reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function streamText(reply: { raw: NodeJS.WritableStream }, text: string): void {
+  for (const chunk of text.match(/.{1,18}(\s+|$)|\S+\s*/g) ?? [text]) {
+    if (chunk) {
+      sendSse(reply, "delta", { text: chunk });
+    }
+  }
 }
 
 function validateBody<T>(schema: z.ZodSchema<T>, body: unknown): T {
@@ -814,14 +822,11 @@ function createServer(config: Config, db: Database) {
     }
   }, async (request, reply) => {
     const body = validateBody(pairSchema, request.body);
-    const pairingCode = body.pairingCode
-      ? (db
-          .prepare("SELECT * FROM pairing_codes WHERE code_hash = ?")
-          .get(hashSecret(body.pairingCode, config.tokenHashSecret)) as PairingCodeRow | undefined)
-      : null;
+    const pairingCode = db
+      .prepare("SELECT * FROM pairing_codes WHERE code_hash = ?")
+      .get(hashSecret(body.pairingCode, config.tokenHashSecret)) as PairingCodeRow | undefined;
 
     if (
-      body.pairingCode &&
       (!pairingCode || pairingCode.used_at || Date.parse(pairingCode.expires_at) <= Date.now())
     ) {
         reply.status(400).send({ error: "Invalid or expired pairing code" });
@@ -834,15 +839,13 @@ function createServer(config: Config, db: Database) {
     const tokenHash = hashSecret(deviceToken, config.tokenHashSecret);
 
     const createDevice = db.transaction(() => {
-      if (pairingCode) {
-        const result = db.prepare("UPDATE pairing_codes SET used_at = ? WHERE id = ? AND used_at IS NULL").run(
-          createdAt,
-          pairingCode.id
-        );
+      const result = db.prepare("UPDATE pairing_codes SET used_at = ? WHERE id = ? AND used_at IS NULL").run(
+        createdAt,
+        pairingCode.id
+      );
 
-        if (result.changes !== 1) {
-          throw httpError("Invalid or expired pairing code", 400);
-        }
+      if (result.changes !== 1) {
+        throw httpError("Invalid or expired pairing code", 400);
       }
 
       db.prepare(
@@ -986,6 +989,7 @@ function createServer(config: Config, db: Database) {
         JSON.stringify({ text: body.text, reply: structured.reply, streamed: true, runId }),
         createdAt
       );
+      streamText(reply, structured.reply);
       sendSse(reply, "reply", { reply: structured.reply, media: [], activity });
       sendSse(reply, "done", { ok: true });
       reply.raw.end();
@@ -998,7 +1002,10 @@ function createServer(config: Config, db: Database) {
       const result = await runHermesCommand(hermesText, config, {
         runId,
         imagePaths: media.map((item) => item.path),
-        onActivity: emit
+        onActivity: emit,
+        onDelta: (delta) => {
+          sendSse(reply, "delta", { text: delta });
+        }
       });
       const uploadedMedia = await uploadCommandMediaToR2(media, config, db, (mediaId, remoteUrl) => {
         emit(commandActivity("compoota.server.r2", "Uploaded photo to Cloudflare R2", remoteUrl ?? mediaId));
@@ -1052,7 +1059,7 @@ const app = createServer(config, db);
 startFeedScheduler(db, config);
 startNotificationScheduler(db);
 
-app.listen({ port: config.port, host: "0.0.0.0" }).catch((error) => {
+app.listen({ port: config.port, host: config.host }).catch((error) => {
   app.log.error(error);
   process.exit(1);
 });

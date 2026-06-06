@@ -1,12 +1,16 @@
 import React from 'react'
 import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View, Platform } from 'react-native'
-import { KeyboardStickyView } from 'react-native-keyboard-controller'
+import Animated, { useAnimatedStyle } from 'react-native-reanimated'
+import { useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller'
 
 import { activityStatusText } from '../../features/assistant/model'
 import { mediaImageSource } from '../../features/media/model'
 import type { AppColors } from '../../lib/theme'
 import type { Message, PendingMedia } from '../../types'
 import { AppleIcon, GlassSurface } from '../ui'
+
+const COMPOSER_INPUT_MIN_HEIGHT = 30
+const COMPOSER_INPUT_MAX_HEIGHT = 116
 
 type AssistantScreenProps = {
   bottomInset: number
@@ -47,11 +51,26 @@ export function AssistantScreen({
   scrollRef,
   scheduleScrollToEnd,
 }: AssistantScreenProps) {
+  const visibleMessages = messages.filter((message) => message.text || message.media?.length || message.activity?.length)
+  const [composerInputExpanded, setComposerInputExpanded] = React.useState(false)
+  const [composerInputScrollable, setComposerInputScrollable] = React.useState(false)
+  const keyboard = useReanimatedKeyboardAnimation()
+  const composerClosedBottom = Math.max(bottomInset, 16)
+  const composerOpenGap = 5
+  const composerStyle = useAnimatedStyle(() => ({
+    transform: [
+      {
+        translateY:
+          keyboard.height.value + keyboard.progress.value * (composerClosedBottom - composerOpenGap),
+      },
+    ],
+  }))
+
   return (
     <>
       <ScrollView
         automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
-        contentContainerStyle={{ gap: 24, paddingHorizontal: 20, paddingBottom: 142, paddingTop: 64 }}
+        contentContainerStyle={{ gap: 26, paddingHorizontal: 18, paddingBottom: 142, paddingTop: 82 }}
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => scheduleScrollToEnd(false)}
@@ -59,24 +78,35 @@ export function AssistantScreen({
         ref={scrollRef}
         style={{ flex: 1 }}
       >
-        {messages
-          .filter((message) => message.text || message.media?.length || message.activity?.length)
-          .map((message) => (
-            <View
-              className={message.role === 'user' ? 'w-full max-w-[560px] flex-row justify-end self-center' : 'w-full max-w-[560px] flex-row self-center'}
-              key={message.id}
-            >
-              <View className={message.role === 'user' ? 'max-w-[78%]' : 'max-w-[86%]'}>
-                {message.role === 'assistant' && message.activity?.length ? (
-                  <Pressable
-                    className="mb-2 rounded-full px-3 py-2 active:opacity-70"
-                    onPress={() => onSelectActivity(message.id)}
-                    style={{ backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)' }}
-                  >
-                    <Text className="text-[13px] font-bold" style={{ color: colors.secondaryText }}>
+        {visibleMessages.length === 0 ? (
+          <View className="w-full max-w-[560px] self-center" style={styles.emptyState}>
+            <View style={[styles.emptyMark, { backgroundColor: colors.primaryText }]} />
+            <Text className="text-[34px]" style={[styles.emptyTitle, { color: colors.text }]}>
+              chat
+            </Text>
+          </View>
+        ) : (
+          visibleMessages.map((message) => {
+            const displayText = message.role === 'assistant' ? message.text.replace(/^\s+/, '') : message.text
+
+            return (
+              <View
+                className={message.role === 'user' ? 'w-full max-w-[560px] flex-row justify-end self-center' : 'w-full max-w-[560px] flex-row self-center'}
+                key={message.id}
+              >
+                <View className={message.role === 'user' ? 'max-w-[80%]' : 'w-full'}>
+                {message.role === 'assistant' && message.isStreaming && !displayText ? (
+                  <View className="mb-2 flex-row items-center gap-2 px-1">
+                    <View
+                      style={[
+                        styles.liveDot,
+                        { backgroundColor: colors.primaryText },
+                      ]}
+                    />
+                    <Text className="text-[13px]" style={[styles.traceText, { color: colors.subtleText }]}>
                       {activityStatusText(message)}
                     </Text>
-                  </Pressable>
+                  </View>
                 ) : null}
                 {message.media?.length ? (
                   <View className="mb-2 flex-row flex-wrap gap-2">
@@ -92,20 +122,31 @@ export function AssistantScreen({
                     ))}
                   </View>
                 ) : null}
-                {message.text ? (
-                  <Text
-                    className={message.role === 'user' ? 'rounded-[22px] px-4 py-3 text-base leading-[22px]' : 'text-base leading-[24px]'}
-                    style={{
-                      backgroundColor: message.role === 'user' ? colors.userBubble : 'transparent',
-                      color: message.role === 'user' ? colors.userText : colors.text,
-                    }}
-                  >
-                    {message.text}
-                  </Text>
+                {displayText ? (
+                  message.role === 'user' ? (
+                    <Text
+                      className="rounded-[22px] px-4 py-3 text-[17px] leading-[23px]"
+                      style={{
+                        backgroundColor: colors.userBubble,
+                        color: colors.userText,
+                      }}
+                    >
+                      {displayText}
+                    </Text>
+                  ) : (
+                    <Text className="px-1 text-[18px] leading-[27px]" style={{ color: colors.text }}>
+                      {displayText}
+                      {message.isStreaming ? (
+                        <Text style={{ color: colors.primaryText }}> |</Text>
+                      ) : null}
+                    </Text>
+                  )
                 ) : null}
+                </View>
               </View>
-            </View>
-          ))}
+            )
+          })
+        )}
       </ScrollView>
 
       {error ? (
@@ -114,9 +155,14 @@ export function AssistantScreen({
         </Text>
       ) : null}
 
-      <KeyboardStickyView
-        offset={{ opened: Math.max(bottomInset, 16) }}
-        style={{ position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 16, paddingBottom: 16 }}
+      <Animated.View
+        style={[
+          styles.composerDock,
+          {
+            bottom: composerClosedBottom,
+          },
+          composerStyle,
+        ]}
       >
         <View className="flex-row items-end gap-2.5">
           <Pressable
@@ -153,9 +199,7 @@ export function AssistantScreen({
               <View className="mb-2 flex-row gap-2">
                 {pendingMedia.map((item) => (
                   <View className="relative h-[58px] w-[58px] overflow-hidden rounded-xl" key={item.id}>
-                    <View className="h-full w-full items-center justify-center" style={{ backgroundColor: colors.accentSoft }}>
-                      <AppleIcon color={colors.accent} name="photo.fill" size={24} />
-                    </View>
+                    <Image className="h-full w-full" resizeMode="cover" source={{ uri: item.uri }} />
                     <Pressable
                       accessibilityLabel="Remove selected photo"
                       className="absolute right-1 top-1 h-5 w-5 items-center justify-center rounded-full bg-black/60"
@@ -167,20 +211,38 @@ export function AssistantScreen({
                 ))}
               </View>
             ) : null}
-            <View className="flex-row items-end gap-2">
+            <View style={[styles.composerInputRow, { alignItems: composerInputExpanded ? 'flex-end' : 'center' }]}>
               <TextInput
-                className="max-h-[116px] min-h-[34px] flex-1 py-1 text-base leading-[22px]"
+                className="flex-1 text-base"
                 keyboardAppearance={isDark ? 'dark' : 'light'}
                 multiline
                 onBlur={() => undefined}
                 onChangeText={onCommandChange}
-                onFocus={onComposerFocus}
+                onContentSizeChange={(event) => {
+                  const contentHeight = event.nativeEvent.contentSize.height
+                  setComposerInputExpanded(contentHeight > COMPOSER_INPUT_MIN_HEIGHT + 4)
+                  setComposerInputScrollable(contentHeight > COMPOSER_INPUT_MAX_HEIGHT)
+                }}
+                onFocus={() => {
+                  onComposerFocus()
+                }}
+                onKeyPress={(event) => {
+                  if (event.nativeEvent.key === 'Enter') {
+                    onSend()
+                  }
+                }}
                 onSubmitEditing={onSend}
-                placeholder="Ask compoota"
+                placeholder="compoota..."
                 placeholderTextColor={colors.placeholder}
-                returnKeyType="default"
+                returnKeyType="send"
+                scrollEnabled={composerInputScrollable}
                 selectionColor={colors.selection}
-                style={{ color: colors.text }}
+                style={[
+                  styles.composerInput,
+                  composerInputExpanded ? styles.composerInputExpanded : styles.composerInputSingleLine,
+                  { color: colors.text },
+                ]}
+                submitBehavior="submit"
                 value={command}
               />
               <Pressable
@@ -188,14 +250,14 @@ export function AssistantScreen({
                 className="h-9 w-9 items-center justify-center rounded-full active:opacity-60"
                 disabled={busy}
                 onPress={onSend}
-                style={{ backgroundColor: colors.action }}
+                style={{ backgroundColor: colors.action, opacity: busy ? 0.45 : 1 }}
               >
                 <AppleIcon color={colors.actionText} name="arrow.up" size={20} weight="bold" />
               </Pressable>
             </View>
           </GlassSurface>
         </View>
-      </KeyboardStickyView>
+      </Animated.View>
     </>
   )
 }
@@ -216,5 +278,54 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  composerDock: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    paddingHorizontal: 16,
+  },
+  composerInputRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  composerInput: {
+    maxHeight: COMPOSER_INPUT_MAX_HEIGHT,
+    minHeight: COMPOSER_INPUT_MIN_HEIGHT,
+    includeFontPadding: false,
+    lineHeight: 22,
+    paddingBottom: 0,
+    paddingTop: 0,
+  },
+  composerInputExpanded: {
+    textAlignVertical: 'top',
+  },
+  composerInputSingleLine: {
+    textAlignVertical: 'center',
+  },
+  emptyMark: {
+    height: 2,
+    width: 74,
+    borderRadius: 1,
+    transform: [{ rotate: '-1.7deg' }],
+  },
+  emptyState: {
+    minHeight: 360,
+    justifyContent: 'center',
+    gap: 12,
+    paddingHorizontal: 8,
+  },
+  emptyTitle: {
+    fontFamily: 'Geist',
+    lineHeight: 39,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  traceText: {
+    fontFamily: 'Geist',
+    lineHeight: 17,
   },
 })

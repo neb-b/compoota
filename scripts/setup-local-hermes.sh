@@ -84,6 +84,7 @@ fi
 if [[ "${force_env}" == "1" || ! -f "${repo_dir}/.env" ]]; then
   cat > "${repo_dir}/.env" <<EOF
 PORT=8787
+SERVER_HOST=127.0.0.1
 DATABASE_PATH=${local_dir}/house.db
 MEDIA_STORAGE_DIRECTORY=${local_dir}/media
 

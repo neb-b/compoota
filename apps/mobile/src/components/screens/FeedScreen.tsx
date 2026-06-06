@@ -6,102 +6,289 @@ import {
   Linking,
   Pressable,
   ScrollView,
+  SectionList,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native'
-import { Gesture, GestureDetector } from 'react-native-gesture-handler'
-import Animated, { interpolate, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 
 import {
   canOpenFeedItem,
-  formatFeedDate,
   formatFeedMeta,
   isPersonalFeedItem,
 } from '../../features/feed/model'
-import { PRIMARY_COLOR, PRIMARY_FOREGROUND_COLOR, type AppColors } from '../../lib/theme'
+import type { AppColors } from '../../lib/theme'
 import type { FeedItem, FeedView } from '../../types'
-import { AppleIcon } from '../ui'
+import { SIDEBAR_EDGE_HIT_SLOP } from '../AppSidebar'
+import { AppleIcon, GlassSurface } from '../ui'
 
-const FEED_ROW_ACTION_WIDTH = 78
-const FEED_ROW_ACTIONS_WIDTH = FEED_ROW_ACTION_WIDTH * 2
+const FEED_MONTH_COLUMN_WIDTH = 38
+const FEED_DAY_COLUMN_WIDTH = 66
 const FEED_ROW_SAVED_EMERALD = '#34d399'
 const FEED_ROW_PERSONAL_VIOLET = '#ddd6fe'
-const FEED_ROW_SPRING = {
-  damping: 25,
-  mass: 0.9,
-  stiffness: 260,
-}
 
 type FeedScreenProps = {
+  bottomInset: number
   colors: AppColors
   emptyText: string
   emptyTitle: string
   error: string
+  isDark: boolean
   items: FeedItem[]
+  liquidGlassEnabled: boolean
   loading: boolean
-  onDismiss: (item: FeedItem) => void
-  onSave: (item: FeedItem) => void
+  onSetFeedView: (view: FeedView) => void
   view: FeedView
 }
 
 export function FeedScreen({
+  bottomInset,
   colors,
   emptyText,
   emptyTitle,
   error,
+  isDark,
   items,
+  liquidGlassEnabled,
   loading,
-  onDismiss,
-  onSave,
+  onSetFeedView,
   view,
 }: FeedScreenProps) {
-  return (
-    <ScrollView
-      contentContainerStyle={{
-        paddingHorizontal: 18,
-        paddingBottom: 24,
-        paddingTop: view === 'calendar' ? 88 : 74,
-      }}
-      keyboardShouldPersistTaps="handled"
-      style={{ flex: 1 }}
-    >
-      {error && !items.length ? (
-        <Text className="text-center text-[15px] leading-[22px]" style={{ color: colors.secondaryText }}>
-          {error}
-        </Text>
-      ) : items.length ? (
-        view === 'calendar' ? (
-          <FeedCalendar colors={colors} items={items} />
-        ) : (
-          <View className="w-full max-w-[560px] self-center">
-            {items.map((item) => (
-              <FeedRow
-                colors={colors}
-                item={item}
-                key={item.id}
-                onDismiss={() => onDismiss(item)}
-                onSave={() => onSave(item)}
-              />
-            ))}
-          </View>
-        )
-      ) : (
-        <View className="min-h-[360px] items-center justify-center px-8">
-          {loading ? <ActivityIndicator color={colors.text} className="mb-3" /> : null}
-          <Text className="text-center text-xl font-extrabold" style={{ color: colors.text }}>
-            {emptyTitle}
-          </Text>
-          <Text
-            className="mt-2 text-center text-[15px] leading-[22px]"
-            style={{ color: colors.secondaryText }}
-          >
-            {emptyText}
-          </Text>
-        </View>
-      )}
-    </ScrollView>
+  const pagerRef = React.useRef<ScrollView>(null)
+  const { width } = useWindowDimensions()
+  const feedSections = React.useMemo(() => groupFeedItemsByMonth(items), [items])
+  const viewIndex = view === 'calendar' ? 1 : 0
+
+  React.useEffect(() => {
+    pagerRef.current?.scrollTo({ animated: false, x: viewIndex * width, y: 0 })
+  }, [viewIndex, width])
+
+  const setPage = React.useCallback(
+    (nextView: FeedView) => {
+      const nextIndex = nextView === 'calendar' ? 1 : 0
+      onSetFeedView(nextView)
+      pagerRef.current?.scrollTo({ animated: true, x: nextIndex * width, y: 0 })
+    },
+    [onSetFeedView, width],
   )
+
+  return (
+    <View style={{ flex: 1 }}>
+      <ScrollView
+        bounces={false}
+        decelerationRate="fast"
+        horizontal
+        keyboardShouldPersistTaps="handled"
+        onMomentumScrollEnd={(event) => {
+          const nextIndex = Math.round(event.nativeEvent.contentOffset.x / Math.max(width, 1))
+          onSetFeedView(nextIndex === 1 ? 'calendar' : 'list')
+        }}
+        pagingEnabled
+        ref={pagerRef}
+        scrollEventThrottle={16}
+        showsHorizontalScrollIndicator={false}
+        style={{ flex: 1 }}
+      >
+        <View style={{ width }}>
+          {items.length ? (
+            <SectionList
+              contentContainerStyle={{
+                paddingHorizontal: 18,
+                paddingBottom: 110 + bottomInset,
+                paddingTop: 74,
+              }}
+              keyExtractor={(item) => item.id}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item, index, section }) => (
+                <View className="w-full max-w-[560px] self-center flex-row">
+                  <View style={{ width: FEED_MONTH_COLUMN_WIDTH }} />
+                  <View className="flex-1">
+                    <FeedRow
+                      colors={colors}
+                      item={item}
+                      showDivider={!section.isLastSection || index < section.data.length - 1}
+                    />
+                  </View>
+                </View>
+              )}
+              renderSectionHeader={({ section }) => (
+                <View
+                  className="w-full max-w-[560px] self-center"
+                  pointerEvents="none"
+                  style={styles.monthStickyHeader}
+                >
+                  <View style={[styles.monthStickyLabel, { backgroundColor: colors.background, width: FEED_MONTH_COLUMN_WIDTH }]}>
+                    <Text
+                      className="text-[13px] font-semibold uppercase leading-[16px]"
+                      style={{ color: colors.subtleText }}
+                    >
+                      {section.label}
+                    </Text>
+                  </View>
+                </View>
+              )}
+              sections={feedSections}
+              stickySectionHeadersEnabled
+              style={{ flex: 1 }}
+            />
+          ) : (
+            <EmptyFeedState
+              colors={colors}
+              emptyText={error || emptyText}
+              emptyTitle={error ? 'Feed refresh failed' : emptyTitle}
+              loading={loading}
+              bottomInset={bottomInset}
+            />
+          )}
+        </View>
+
+        <View style={{ width }}>
+          <ScrollView
+            contentContainerStyle={{
+              paddingHorizontal: 18,
+              paddingBottom: 110 + bottomInset,
+              paddingTop: 88,
+            }}
+            keyboardShouldPersistTaps="handled"
+            style={{ flex: 1 }}
+          >
+            {items.length ? (
+              <FeedCalendar colors={colors} items={items} />
+            ) : (
+              <EmptyFeedState
+                colors={colors}
+                emptyText={error || emptyText}
+                emptyTitle={error ? 'Feed refresh failed' : emptyTitle}
+                loading={loading}
+                bottomInset={bottomInset}
+              />
+            )}
+          </ScrollView>
+        </View>
+      </ScrollView>
+
+      <View pointerEvents="box-only" style={styles.sidebarEdgePassthrough} />
+
+      <View
+        className="absolute left-0 right-0 items-center px-4"
+        pointerEvents="box-none"
+        style={{ bottom: Math.max(bottomInset, 16) }}
+      >
+        <GlassSurface
+          colorScheme={isDark ? 'dark' : 'light'}
+          enabled={liquidGlassEnabled}
+          isInteractive
+          style={[
+            styles.feedPagerDotsGlass,
+            {
+              backgroundColor: liquidGlassEnabled
+                ? 'transparent'
+                : isDark
+                  ? 'rgba(24,24,24,0.82)'
+                  : 'rgba(255,255,255,0.82)',
+              borderColor: liquidGlassEnabled
+                ? isDark
+                  ? 'rgba(255,255,255,0.22)'
+                  : 'rgba(255,255,255,0.72)'
+                : colors.border,
+            },
+          ]}
+          tintColor={colors.glassTint}
+        >
+          {(['list', 'calendar'] as const).map((nextView) => (
+            <Pressable
+              accessibilityLabel={nextView === 'list' ? 'Show event list' : 'Show event calendar'}
+              className="h-9 w-9 items-center justify-center rounded-full active:opacity-60"
+              key={nextView}
+              onPress={() => setPage(nextView)}
+              style={{
+                backgroundColor:
+                  view === nextView
+                    ? isDark
+                      ? 'rgba(255,255,255,0.18)'
+                      : 'rgba(0,0,0,0.08)'
+                    : 'transparent',
+              }}
+            >
+              <AppleIcon
+                color={view === nextView ? colors.text : colors.secondaryText}
+                name={nextView === 'list' ? 'list.bullet' : 'calendar'}
+                size={17}
+                weight={view === nextView ? 'semibold' : 'regular'}
+              />
+            </Pressable>
+          ))}
+        </GlassSurface>
+      </View>
+    </View>
+  )
+}
+
+function EmptyFeedState({
+  bottomInset,
+  colors,
+  emptyText,
+  emptyTitle,
+  loading,
+}: {
+  bottomInset: number
+  colors: AppColors
+  emptyText: string
+  emptyTitle: string
+  loading: boolean
+}) {
+  return (
+    <View
+      className="items-center justify-center px-8"
+      style={{ minHeight: 360, paddingBottom: 110 + bottomInset, paddingTop: 74 }}
+    >
+      {loading ? <ActivityIndicator color={colors.text} className="mb-3" /> : null}
+      <Text className="text-center text-xl font-extrabold" style={{ color: colors.text }}>
+        {emptyTitle}
+      </Text>
+      <Text className="mt-2 text-center text-[15px] leading-[22px]" style={{ color: colors.secondaryText }}>
+        {emptyText}
+      </Text>
+    </View>
+  )
+}
+
+type FeedMonthSection = {
+  data: FeedItem[]
+  isLastSection: boolean
+  key: string
+  label: string
+}
+
+function groupFeedItemsByMonth(items: FeedItem[]): FeedMonthSection[] {
+  const sectionMap = new Map<string, Omit<FeedMonthSection, 'isLastSection'>>()
+  const monthFormat = new Intl.DateTimeFormat(undefined, { month: 'short' })
+
+  for (const item of items) {
+    const start = new Date(item.startsAt)
+    const key = Number.isNaN(start.getTime())
+      ? 'unknown'
+      : `${start.getFullYear()}-${String(start.getMonth()).padStart(2, '0')}`
+    const label = Number.isNaN(start.getTime()) ? 'Later' : monthFormat.format(start)
+    const section = sectionMap.get(key)
+
+    if (section) {
+      section.data.push(item)
+      continue
+    }
+
+    sectionMap.set(key, {
+      data: [item],
+      key,
+      label,
+    })
+  }
+
+  return Array.from(sectionMap.values()).map((section, index, sections) => ({
+    ...section,
+    isLastSection: index === sections.length - 1,
+  }))
 }
 
 function FeedCalendar({ colors, items }: { colors: AppColors; items: FeedItem[] }) {
@@ -210,7 +397,7 @@ function CalendarDay({
                 rangeSegment.connectsNext
                   ? styles.calendarRangeSegmentConnectedRight
                   : styles.calendarRangeSegmentEnd,
-                { backgroundColor: rangeSegment.color },
+                { backgroundColor: colors.primary },
               ]}
             />
           ) : (
@@ -219,7 +406,7 @@ function CalendarDay({
               .map((item) => (
                 <View
                   key={item.id}
-                  style={[styles.calendarDot, { backgroundColor: calendarItemColor(item) }]}
+                  style={[styles.calendarDot, { backgroundColor: colors.primary }]}
                 />
               ))
           )
@@ -268,7 +455,7 @@ function CalendarPopoverCard({ colors, date, items }: { colors: AppColors; date:
               <Text
                 className="text-[16px] font-semibold leading-[20px]"
                 numberOfLines={2}
-                style={{ color: PRIMARY_FOREGROUND_COLOR }}
+                style={{ color: colors.primaryForeground }}
               >
                 {item.title}
               </Text>
@@ -293,65 +480,21 @@ function CalendarPopoverCard({ colors, date, items }: { colors: AppColors; date:
 function FeedRow({
   colors,
   item,
-  onDismiss,
-  onSave,
+  showDivider,
 }: {
   colors: AppColors
   item: FeedItem
-  onDismiss: () => void
-  onSave: () => void
+  showDivider: boolean
 }) {
   const router = useRouter()
   const personal = isPersonalFeedItem(item)
   const meta = personal ? '' : formatFeedMeta(item)
-  const proximity = formatFeedProximity(item)
+  const dayLabel = formatFeedDayRange(item)
+  const soonLabel = formatSoonLabel(item)
   const saved = personal || item.feedback === 'save' || item.feedback === 'like'
   const rowBackgroundColor = personal ? 'rgba(0,0,0,0.035)' : colors.background
   const savedTextColor = personal ? FEED_ROW_PERSONAL_VIOLET : FEED_ROW_SAVED_EMERALD
   const rowTextColor = personal ? colors.text : saved ? savedTextColor : colors.text
-  const rowDateTextColor = colors.secondaryText
-  const translateX = useSharedValue(0)
-  const gestureStartX = useSharedValue(0)
-  const contentStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: translateX.value }],
-  }))
-  const actionsStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(
-      -translateX.value,
-      [0, FEED_ROW_ACTIONS_WIDTH * 0.45, FEED_ROW_ACTIONS_WIDTH],
-      [0, 1, 1],
-    ),
-  }))
-
-  const closeActions = React.useCallback(() => {
-    translateX.value = withSpring(0, FEED_ROW_SPRING)
-  }, [translateX])
-
-  const triggerSave = React.useCallback(() => {
-    closeActions()
-    onSave()
-  }, [closeActions, onSave])
-
-  const triggerHide = React.useCallback(() => {
-    translateX.value = withSpring(-FEED_ROW_ACTIONS_WIDTH, FEED_ROW_SPRING)
-    onDismiss()
-  }, [onDismiss, translateX])
-
-  const panGesture = Gesture.Pan()
-    .activeOffsetX([-12, 12])
-    .failOffsetY([-10, 10])
-    .onBegin(() => {
-      gestureStartX.value = translateX.value
-    })
-    .onUpdate((event) => {
-      const nextX = gestureStartX.value + event.translationX
-      translateX.value = Math.max(-FEED_ROW_ACTIONS_WIDTH, Math.min(0, nextX))
-    })
-    .onEnd((event) => {
-      const projectedX = translateX.value + event.velocityX * 0.12
-      const shouldOpen = projectedX < -FEED_ROW_ACTIONS_WIDTH * 0.42
-      translateX.value = withSpring(shouldOpen ? -FEED_ROW_ACTIONS_WIDTH : 0, FEED_ROW_SPRING)
-    })
 
   return (
     <View
@@ -359,66 +502,44 @@ function FeedRow({
         backgroundColor: personal ? rowBackgroundColor : 'transparent',
       }}
     >
-      <Animated.View
-        className="absolute bottom-0 right-0 top-0 flex-row justify-end"
-        style={[styles.feedRowActions, actionsStyle]}
+      <Pressable
+        accessibilityLabel={`Open ${item.title}`}
+        accessibilityRole="link"
+        className={
+          personal ? 'gap-[5px] px-2.5 pt-4 active:opacity-70' : 'gap-[5px] pt-4 active:opacity-70'
+        }
+        onPress={() => {
+          if (personal) {
+            router.push({
+              pathname: '/new-event',
+              params: {
+                eventId: item.id,
+                text: item.title,
+                startsAt: item.startsAt,
+                endsAt: item.endsAt ?? '',
+              },
+            })
+            return
+          }
+          if (canOpenFeedItem(item)) {
+            Linking.openURL(item.sourceUrl).catch(() => undefined)
+          }
+        }}
+        style={{
+          backgroundColor: rowBackgroundColor,
+        }}
       >
-        <Pressable
-          accessibilityLabel="Save feed item"
-          className="items-center justify-center gap-1 active:opacity-85"
-          onPress={triggerSave}
-          style={[styles.feedRowAction, { backgroundColor: saved ? colors.action : colors.accent }]}
-        >
-          <AppleIcon color="#ffffff" name={saved ? 'bookmark.fill' : 'bookmark'} size={21} />
-          <Text className="text-xs font-semibold" style={{ color: '#ffffff' }}>
-            save
-          </Text>
-        </Pressable>
-        <Pressable
-          accessibilityLabel="Hide feed item"
-          className="items-center justify-center gap-1 active:opacity-85"
-          onPress={triggerHide}
-          style={[styles.feedRowAction, { backgroundColor: '#ff3b30' }]}
-        >
-          <AppleIcon color="#ffffff" name="eye.slash" size={21} />
-          <Text className="text-xs font-semibold" style={{ color: '#ffffff' }}>
-            hide
-          </Text>
-        </Pressable>
-      </Animated.View>
-
-      <GestureDetector gesture={panGesture}>
-        <Animated.View style={contentStyle}>
-          <Pressable
-            accessibilityLabel={`Open ${item.title}`}
-            accessibilityRole="link"
-            className={
-              personal ? 'gap-[5px] px-2.5 pt-4 active:opacity-70' : 'gap-[5px] pt-4 active:opacity-70'
-            }
-            onPress={() => {
-              if (translateX.value < -4) {
-                closeActions()
-                return
-              }
-              if (personal) {
-                router.push({
-                  pathname: '/new-event',
-                  params: {
-                    eventId: item.id,
-                    text: item.title,
-                    startsAt: item.startsAt,
-                    endsAt: item.endsAt ?? '',
-                  },
-                })
-                return
-              }
-              if (canOpenFeedItem(item)) {
-                Linking.openURL(item.sourceUrl).catch(() => undefined)
-              }
-            }}
-            style={{
-              backgroundColor: rowBackgroundColor,
-            }}
+        <View className="flex-row items-start">
+          <View style={styles.feedDayColumn}>
+            {dayLabel ? (
+              <Text className="text-[14px] font-normal leading-[19px]" style={{ color: colors.subtleText }}>
+                {dayLabel}
+              </Text>
+            ) : null}
+          </View>
+          <View
+            className="flex-1 gap-[3px] pb-4"
+            style={{ borderBottomColor: colors.border, borderBottomWidth: showDivider ? StyleSheet.hairlineWidth : 0 }}
           >
             {item.imageUrl ? (
               <Image
@@ -429,49 +550,27 @@ function FeedRow({
                 style={{ backgroundColor: 'rgba(0,0,0,0.06)' }}
               />
             ) : null}
-            <View className="flex-row items-start gap-1.5">
-              <View className="w-[58px]">
-                <Text
-                  className="text-[14px] font-normal leading-[19px]"
-                  numberOfLines={1}
-                  style={{ color: rowDateTextColor }}
-                >
-                  {formatFeedDate(item)}
-                </Text>
-              </View>
-              <View className="flex-1 gap-[3px] border-b pb-4" style={{ borderBottomColor: colors.border }}>
-                {proximity ? (
-                  <Text
-                    className="text-[14px] font-normal leading-[19px]"
-                    style={{ color: colors.subtleText }}
-                  >
-                    {proximity}
-                  </Text>
-                ) : null}
-                <Text className="text-[14px] font-normal leading-[19px]" style={{ color: rowTextColor }}>
-                  {item.title}
-                </Text>
-              </View>
-            </View>
+            <Text className="text-[14px] font-normal leading-[19px]" style={{ color: rowTextColor }}>
+              {item.title}
+            </Text>
+            {soonLabel ? (
+              <Text className="text-[13px] font-normal leading-[18px]" style={{ color: colors.primaryText }}>
+                {soonLabel}
+              </Text>
+            ) : null}
             {meta ? (
-              <Text
-                className="text-[13px] font-normal leading-[18px]"
-                style={{ color: colors.secondaryText }}
-              >
+              <Text className="text-[13px] font-normal leading-[18px]" style={{ color: colors.secondaryText }}>
                 {meta}
               </Text>
             ) : null}
             {item.summary ? (
-              <Text
-                className="text-[13px] font-normal leading-[19px]"
-                style={{ color: colors.secondaryText }}
-              >
+              <Text className="text-[13px] font-normal leading-[19px]" style={{ color: colors.secondaryText }}>
                 {item.summary}
               </Text>
             ) : null}
-          </Pressable>
-        </Animated.View>
-      </GestureDetector>
+          </View>
+        </View>
+      </Pressable>
     </View>
   )
 }
@@ -535,7 +634,6 @@ function isRangeEvent(item: FeedItem) {
 }
 
 type CalendarRangeSegment = {
-  color: string
   connectsNext: boolean
   connectsPrevious: boolean
 }
@@ -554,14 +652,9 @@ function calendarRangeSegment(items: FeedItem[], date: Date): CalendarRangeSegme
   }
 
   return {
-    color: calendarItemColor(item),
     connectsPrevious: day > start && day.getDay() !== 0,
     connectsNext: day < end && day.getDay() !== 6,
   }
-}
-
-function calendarItemColor(_item: FeedItem) {
-  return PRIMARY_COLOR
 }
 
 function formatFeedTime(item: FeedItem) {
@@ -585,7 +678,27 @@ function formatFeedTime(item: FeedItem) {
   return timeFormat.format(start)
 }
 
-function formatFeedProximity(item: FeedItem) {
+function formatFeedDayRange(item: FeedItem) {
+  const start = new Date(item.startsAt)
+  if (Number.isNaN(start.getTime())) {
+    return ''
+  }
+
+  const startDay = new Intl.DateTimeFormat(undefined, { day: 'numeric' }).format(start)
+  if (!item.endsAt) {
+    return startDay
+  }
+
+  const end = new Date(item.endsAt)
+  if (Number.isNaN(end.getTime()) || dateKey(start) === dateKey(end)) {
+    return startDay
+  }
+
+  const endDay = new Intl.DateTimeFormat(undefined, { day: 'numeric' }).format(end)
+  return `${startDay}-${endDay}`
+}
+
+function formatSoonLabel(item: FeedItem) {
   const start = startOfDay(new Date(item.startsAt))
   if (Number.isNaN(start.getTime())) {
     return ''
@@ -593,18 +706,17 @@ function formatFeedProximity(item: FeedItem) {
 
   const today = startOfDay(new Date())
   const daysAway = Math.round((start.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
-  if (daysAway < 0 || daysAway > 30) {
+  if (daysAway < 0 || daysAway >= 14) {
     return ''
   }
   if (daysAway === 0) {
     return 'today'
   }
-  if (daysAway < 14) {
-    return `${daysAway} ${daysAway === 1 ? 'day' : 'days'} away`
+  if (daysAway === 1) {
+    return 'tomorrow'
   }
 
-  const weeksAway = Math.ceil(daysAway / 7)
-  return `${weeksAway} ${weeksAway === 1 ? 'week' : 'weeks'} away`
+  return `${daysAway} days away`
 }
 
 function calendarScreenPreviewPosition(weekDay: number) {
@@ -655,9 +767,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   calendarDot: {
-    borderRadius: 3,
-    height: 6,
-    width: 6,
+    borderRadius: 3.5,
+    height: 7,
+    width: 7,
   },
   calendarPopoverCard: {
     backgroundColor: '#18181b',
@@ -704,10 +816,42 @@ const styles = StyleSheet.create({
   calendarScreenPreviewRight: {
     right: 8,
   },
-  feedRowActions: {
-    width: FEED_ROW_ACTIONS_WIDTH,
+  feedDayColumn: {
+    width: FEED_DAY_COLUMN_WIDTH,
+    paddingTop: 1,
+    paddingRight: 14,
   },
-  feedRowAction: {
-    width: FEED_ROW_ACTION_WIDTH,
+  feedPagerDotsGlass: {
+    width: 88,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: StyleSheet.hairlineWidth,
+    shadowColor: '#6f6f68',
+    shadowOpacity: 0.14,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    padding: 3,
+    overflow: 'hidden',
+  },
+  monthStickyHeader: {
+    height: 44,
+    marginBottom: -44,
+    zIndex: 4,
+  },
+  monthStickyLabel: {
+    paddingTop: 15,
+    paddingBottom: 4,
+  },
+  sidebarEdgePassthrough: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    top: 82,
+    width: SIDEBAR_EDGE_HIT_SLOP,
+    zIndex: 3,
   },
 })

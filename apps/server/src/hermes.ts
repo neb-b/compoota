@@ -1,7 +1,8 @@
 import { createReadStream, existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type { Config } from "./config.js";
 
 export type CommandActivity = {
@@ -23,6 +24,7 @@ type RunHermesOptions = {
   toolsets?: string[];
   timeoutSeconds?: number;
   onActivity?: (activity: CommandActivity) => void;
+  onDelta?: (delta: string) => void;
 };
 
 type ProgressFileEvent = {
@@ -32,6 +34,14 @@ type ProgressFileEvent = {
   status?: string;
   at?: string;
 };
+
+type StreamFileEvent = {
+  type?: string;
+  text?: string;
+};
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const streamingBridgePath = join(repoRoot, "scripts", "hermes-stream-jsonl.py");
 
 function activity(
   id: string,
@@ -107,6 +117,46 @@ async function drainProgressFile(
   return nextOffset;
 }
 
+async function drainStreamFile(
+  filePath: string,
+  offset: number,
+  onDelta: (delta: string) => void
+): Promise<number> {
+  if (!existsSync(filePath)) {
+    return offset;
+  }
+
+  let nextOffset = offset;
+  let buffer = "";
+
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath, { encoding: "utf8", start: offset });
+    stream.on("data", (chunk) => {
+      buffer += chunk;
+      nextOffset += Buffer.byteLength(chunk, "utf8");
+    });
+    stream.on("end", resolve);
+    stream.on("error", reject);
+  });
+
+  for (const line of buffer.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    try {
+      const event = JSON.parse(line) as StreamFileEvent;
+      if (event.type === "delta" && typeof event.text === "string" && event.text) {
+        onDelta(event.text);
+      }
+    } catch {
+      // Stream events are best-effort and should never break the command.
+    }
+  }
+
+  return nextOffset;
+}
+
 export async function runHermesCommand(
   text: string,
   config: Config,
@@ -132,6 +182,7 @@ export async function runHermesCommand(
 
   if (config.hermesCommandMode === "mock") {
     emit(activity("compoota.mock", "Used the local mock responder", "Private agent calls are disabled in this config."));
+    options.onDelta?.(`mock compoota heard: ${text}`);
     return {
       reply: `mock compoota heard: ${text}`,
       activity: commandActivity
@@ -151,8 +202,11 @@ export async function runHermesCommand(
   const runId = options.runId ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const timeoutSeconds = options.timeoutSeconds ?? config.hermesTimeoutSeconds;
   const progressFile = join(tmpdir(), "compoota-progress", `${runId}.jsonl`);
+  const streamFile = join(tmpdir(), "compoota-stream", `${runId}.jsonl`);
   mkdirSync(dirname(progressFile), { recursive: true });
+  mkdirSync(dirname(streamFile), { recursive: true });
   rmSync(progressFile, { force: true });
+  rmSync(streamFile, { force: true });
 
   emit(
     activity(
@@ -164,12 +218,20 @@ export async function runHermesCommand(
   );
 
   let progressOffset = 0;
+  let streamOffset = 0;
   const progressInterval = setInterval(() => {
     drainProgressFile(progressFile, progressOffset, emit)
       .then((nextOffset) => {
         progressOffset = nextOffset;
       })
       .catch(() => undefined);
+    if (options.onDelta) {
+      drainStreamFile(streamFile, streamOffset, options.onDelta)
+        .then((nextOffset) => {
+          streamOffset = nextOffset;
+        })
+        .catch(() => undefined);
+    }
   }, 250);
 
   try {
@@ -177,7 +239,7 @@ export async function runHermesCommand(
     const stderrChunks: Buffer[] = [];
     const imageCommands = (options.imagePaths ?? []).map((imagePath) => `/image ${imagePath}`);
     const prompt = imageCommands.length > 0 ? `${imageCommands.join("\n")}\n\n${text}` : text;
-    const args = ["-m", "hermes_cli.main"];
+    const args = options.onDelta ? [streamingBridgePath] : ["-m", "hermes_cli.main"];
     if (options.toolsets?.length) {
       args.push("-t", options.toolsets.join(","));
     }
@@ -189,6 +251,7 @@ export async function runHermesCommand(
         ...process.env,
         COMPOOTA_PROGRESS_FILE: progressFile,
         COMPOOTA_RUN_ID: runId,
+        COMPOOTA_STREAM_FILE: streamFile,
         HERMES_ENABLE_PROJECT_PLUGINS: process.env.HERMES_ENABLE_PROJECT_PLUGINS ?? "1",
         HERMES_HOME: config.hermesHome,
         HERMES_YOLO_MODE: "1",
@@ -233,6 +296,9 @@ export async function runHermesCommand(
     });
 
     progressOffset = await drainProgressFile(progressFile, progressOffset, emit);
+    if (options.onDelta) {
+      streamOffset = await drainStreamFile(streamFile, streamOffset, options.onDelta);
+    }
 
     if (exitCode !== 0) {
       const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
@@ -253,6 +319,10 @@ export async function runHermesCommand(
   } finally {
     clearInterval(progressInterval);
     await drainProgressFile(progressFile, progressOffset, emit).catch(() => undefined);
+    if (options.onDelta) {
+      await drainStreamFile(streamFile, streamOffset, options.onDelta).catch(() => undefined);
+    }
     rmSync(progressFile, { force: true });
+    rmSync(streamFile, { force: true });
   }
 }

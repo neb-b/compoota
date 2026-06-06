@@ -17,6 +17,7 @@ export default function TabsLayout() {
       }}
     >
       <Stack.Screen name="index" />
+      <Stack.Screen name="chat" />
       <Stack.Screen name="assistant" />
       <Stack.Screen name="maintenance" />
       <Stack.Screen name="media" />

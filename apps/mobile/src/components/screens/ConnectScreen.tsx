@@ -15,9 +15,11 @@ type ConnectScreenProps = {
   onConnect: () => void
   onDeviceNameChange: (value: string) => void
   onLocationChange: (value: string) => void
+  onPairingCodeChange: (value: string) => void
   onServerUrlChange: (value: string) => void
   onUseCurrentLocation: () => void
   pairing: boolean
+  pairingCode: string
   serverUrl: string
 }
 
@@ -30,9 +32,11 @@ export function ConnectScreen({
   onConnect,
   onDeviceNameChange,
   onLocationChange,
+  onPairingCodeChange,
   onServerUrlChange,
   onUseCurrentLocation,
   pairing,
+  pairingCode,
   serverUrl,
 }: ConnectScreenProps) {
   return (
@@ -80,6 +84,21 @@ export function ConnectScreen({
                 className="min-h-[50px] rounded-2xl px-3.5 text-base"
                 style={{ backgroundColor: colors.input, borderColor: colors.border, borderWidth: 1, color: colors.text }}
                 value={serverUrl}
+              />
+            </Field>
+
+            <Field label="pairing code" colors={colors}>
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="number-pad"
+                maxLength={6}
+                onChangeText={(value) => onPairingCodeChange(value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="123456"
+                placeholderTextColor={colors.placeholder}
+                className="min-h-[50px] rounded-2xl px-3.5 text-base"
+                style={{ backgroundColor: colors.input, borderColor: colors.border, borderWidth: 1, color: colors.text }}
+                value={pairingCode}
               />
             </Field>
 

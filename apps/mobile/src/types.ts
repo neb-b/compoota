@@ -29,7 +29,7 @@ export type MessageMedia = {
   height?: number
 }
 
-export type ActiveScreen = 'home' | 'assistant' | 'maintenance' | 'media' | 'settings'
+export type ActiveScreen = 'home' | 'chat' | 'assistant' | 'maintenance' | 'media' | 'settings'
 
 export type Message = {
   id: string

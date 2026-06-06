@@ -1,5 +1,6 @@
 export type Config = {
   port: number;
+  host: string;
   databasePath: string;
   mediaStorageDirectory: string;
   r2AccountId: string | null;
@@ -106,6 +107,7 @@ export function loadConfig(): Config {
 
   return {
     port: readNumber("PORT", 8787),
+    host: readString("SERVER_HOST", "0.0.0.0"),
     databasePath: readString("DATABASE_PATH", "./house.db"),
     mediaStorageDirectory: readString("MEDIA_STORAGE_DIRECTORY", "./media"),
     r2AccountId: readOptionalString("CLOUDFLARE_R2_ACCOUNT_ID"),

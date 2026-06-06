@@ -15,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../features/auth/AuthProvider'
 import { useCreateFeedEventMutation, useUpdateFeedEventMutation } from '../../features/feed/api'
 import { combineEventDateTime } from '../../features/feed/model'
-import { PRIMARY_COLOR, PRIMARY_COLOR_SOFT, PRIMARY_FOREGROUND_COLOR } from '../../lib/theme'
+import { createColors } from '../../lib/theme'
 import { AppleIcon } from '../ui'
 
 const TAUPE_50 = '#fbfaf9'
@@ -36,6 +36,7 @@ const ERROR = '#f87171'
 
 export function NewEventScreen() {
   const auth = useAuth()
+  const colors = React.useMemo(() => createColors(auth.isDark, auth.themeColor), [auth.isDark, auth.themeColor])
   const router = useRouter()
   const params = useLocalSearchParams<{
     eventId?: string | string[]
@@ -135,6 +136,7 @@ export function NewEventScreen() {
 
           <View style={styles.fieldGroup}>
             <DateRangeCalendar
+              colors={colors}
               endDate={endDate}
               onSelectDate={selectDate}
               startDate={startDate}
@@ -147,9 +149,13 @@ export function NewEventScreen() {
             accessibilityLabel="Save event"
             disabled={saveDisabled}
             onPress={saveEvent}
-            style={[styles.saveButton, saveDisabled ? styles.saveButtonDisabled : null]}
+            style={[
+              styles.saveButton,
+              { backgroundColor: colors.primary, shadowColor: colors.primary },
+              saveDisabled ? styles.saveButtonDisabled : null,
+            ]}
           >
-            <Text style={styles.saveButtonText}>
+            <Text style={[styles.saveButtonText, { color: colors.primaryForeground }]}>
               {saving ? 'Saving...' : editing ? 'Update event' : 'Save event'}
             </Text>
           </Pressable>
@@ -186,10 +192,12 @@ function startOfMonth(value: Date) {
 }
 
 function DateRangeCalendar({
+  colors,
   endDate,
   onSelectDate,
   startDate,
 }: {
+  colors: ReturnType<typeof createColors>
   endDate: Date | null
   onSelectDate: (date: Date) => void
   startDate: Date
@@ -247,19 +255,19 @@ function DateRangeCalendar({
               const fillRight = selectedEnd ? '50%' : 0
               return (
                 <View key={day.key} style={styles.rangeDayCell}>
-                  {inRange ? <View style={[styles.rangeDayFill, { left: fillLeft, right: fillRight }]} /> : null}
+                  {inRange ? <View style={[styles.rangeDayFill, { backgroundColor: colors.primarySoft, left: fillLeft, right: fillRight }]} /> : null}
                   <Pressable
                     accessibilityLabel={new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(day.date)}
                     disabled={disabled}
                     onPress={() => onSelectDate(day.date)}
                     style={[
                       styles.rangeDayButton,
-                      active ? styles.rangeDayButtonActive : null,
+                      active ? { backgroundColor: colors.primary } : null,
                       !day.inMonth ? styles.rangeDayOutside : null,
                       disabled ? styles.rangeDayDisabled : null,
                     ]}
                   >
-                    <Text style={[styles.rangeDayText, active ? styles.rangeDayTextActive : null]}>
+                    <Text style={[styles.rangeDayText, active ? [styles.rangeDayTextActive, { color: colors.primaryForeground }] : null]}>
                       {day.date.getDate()}
                     </Text>
                   </Pressable>
@@ -388,9 +396,6 @@ const styles = StyleSheet.create({
     width: 34,
     zIndex: 2,
   },
-  rangeDayButtonActive: {
-    backgroundColor: PRIMARY_COLOR,
-  },
   rangeDayCell: {
     alignItems: 'center',
     flex: 1,
@@ -402,7 +407,6 @@ const styles = StyleSheet.create({
     opacity: 0.24,
   },
   rangeDayFill: {
-    backgroundColor: PRIMARY_COLOR_SOFT,
     height: 34,
     left: 0,
     position: 'absolute',
@@ -417,16 +421,13 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   rangeDayTextActive: {
-    color: PRIMARY_FOREGROUND_COLOR,
     fontWeight: '800',
   },
   saveButton: {
     alignItems: 'center',
-    backgroundColor: PRIMARY_COLOR,
     borderRadius: 999,
     minHeight: 56,
     justifyContent: 'center',
-    shadowColor: PRIMARY_COLOR,
     shadowOffset: { width: 0, height: 12 },
     shadowOpacity: 0.25,
     shadowRadius: 24,
@@ -436,7 +437,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0,
   },
   saveButtonText: {
-    color: PRIMARY_FOREGROUND_COLOR,
     fontSize: 17,
     fontWeight: '600',
   },

@@ -43,7 +43,7 @@ import { FeedScreen } from '../screens/FeedScreen'
 import { MaintenanceScreen } from '../screens/MaintenanceScreen'
 import { MediaScreen } from '../screens/MediaScreen'
 import { SettingsScreen } from '../screens/SettingsScreen'
-import { TopBar, FEED_PAGE_TAB_WIDTH } from './TopBar'
+import { TopBar } from './TopBar'
 import { ActivityModal } from '../modals/ActivityModal'
 import { ExpandedMediaModal } from '../modals/ExpandedMediaModal'
 import { FeedUndoToast } from '../modals/FeedUndoToast'
@@ -77,7 +77,7 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
   const router = useRouter()
   const queryClient = useQueryClient()
   const { width: screenWidth } = useWindowDimensions()
-  const colors = useMemo(() => createColors(auth.isDark), [auth.isDark])
+  const colors = useMemo(() => createColors(auth.isDark, auth.themeColor), [auth.isDark, auth.themeColor])
   const liquidGlassEnabled = useMemo(canRenderLiquidGlass, [])
   const scrollRef = useRef<ScrollView>(null)
   const scrollToEndTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([])
@@ -108,7 +108,6 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
   const sidebarOpenValue = useSharedValue(false)
   const expandedMediaTranslateX = useSharedValue(0)
   const expandedMediaTranslateY = useSharedValue(0)
-  const feedViewTranslateX = useSharedValue(0)
   const contentOpacity = useSharedValue(1)
 
   const feedQuery = useFeedQuery(auth.connection)
@@ -142,8 +141,8 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
   const selectedActivityMessage = messages.find((message) => message.id === selectedActivityMessageId) ?? null
   const hasMessages = messages.some((message) => message.text || message.media?.length || message.activity?.length)
   const pageTitle =
-    displayedScreen === 'assistant'
-      ? 'Assistant'
+    displayedScreen === 'chat' || displayedScreen === 'assistant'
+      ? 'chat'
       : displayedScreen === 'maintenance'
         ? 'Maintenance'
         : displayedScreen === 'media'
@@ -173,14 +172,6 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
   useEffect(() => {
     setMessages(auth.initialMessages)
   }, [auth.connection?.deviceId, auth.initialMessages])
-
-  useEffect(() => {
-    feedViewTranslateX.value = withSpring(feedView === 'calendar' ? FEED_PAGE_TAB_WIDTH : 0, {
-      damping: 24,
-      mass: 0.8,
-      stiffness: 260,
-    })
-  }, [feedView, feedViewTranslateX])
 
   useEffect(() => {
     if (!auth.connection || auth.loading) {
@@ -450,10 +441,17 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
             activity: mergeActivity(message.activity, step),
           }))
         },
+        onDelta: (delta) => {
+          updateAssistant((message) => ({
+            ...message,
+            text: `${message.text}${message.text ? delta : delta.replace(/^\s+/, '')}`,
+          }))
+          scheduleScrollToEnd(true)
+        },
         onReply: (reply, activity, media) => {
           updateAssistant((message) => ({
             ...message,
-            text: reply,
+            text: reply.replace(/^\s+/, ''),
             media: media?.length ? media : message.media,
             activity: activity ?? message.activity,
             isStreaming: false,
@@ -537,7 +535,7 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
     setPendingMedia([])
     setSelectedActivityMessageId(null)
     setMessages([])
-    setActiveScreen('assistant')
+    setActiveScreen('chat')
     setFeedAutoRefreshAttempted(false)
     scrollRef.current?.scrollTo({ y: 0, animated: true })
   }
@@ -745,9 +743,6 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
     const progress = sidebarOpenDistance > 0 ? sidebarTranslateX.value / sidebarOpenDistance : 0
     return { opacity: interpolate(progress, [0, 1], [0, 1]) }
   }, [sidebarOpenDistance])
-  const feedViewIndicatorStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: feedViewTranslateX.value }],
-  }))
   const expandedMediaStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: expandedMediaTranslateX.value }, { translateY: expandedMediaTranslateY.value }],
   }))
@@ -778,9 +773,11 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
         onConnect={connect}
         onDeviceNameChange={auth.setDeviceName}
         onLocationChange={auth.setHomeLocation}
+        onPairingCodeChange={auth.setPairingCode}
         onServerUrlChange={auth.setServerUrl}
         onUseCurrentLocation={useCurrentLocation}
         pairing={auth.pairing}
+        pairingCode={auth.pairingCode}
         serverUrl={auth.serverUrl}
       />
     )
@@ -828,30 +825,29 @@ export function AppShell({ screen = 'home' }: AppShellProps) {
               <TopBar
                 activeScreen={displayedScreen}
                 colors={colors}
-                feedViewIndicatorStyle={feedViewIndicatorStyle}
-                feedView={feedView}
                 hasMessages={hasMessages}
                 isDark={auth.isDark}
                 liquidGlassEnabled={mainPanelGlassEnabled}
                 onAddEvent={openNewFeedEvent}
                 onBack={goBack}
                 onFreshChat={startFreshChat}
-                onSetFeedView={setFeedView}
                 pageTitle={pageTitle}
               />
               {displayedScreen === 'home' ? (
                 <FeedScreen
+                  bottomInset={insets.bottom}
                   colors={colors}
                   emptyText={feedEmptyText}
                   emptyTitle={feedEmptyTitle}
                   error={error || (feedQuery.error instanceof Error ? feedQuery.error.message : '')}
+                  isDark={auth.isDark}
                   items={visibleFeedItems}
+                  liquidGlassEnabled={mainPanelGlassEnabled}
                   loading={feedRefreshInProgress}
-                  onDismiss={dismissFeedItem}
-                  onSave={saveFeedItem}
+                  onSetFeedView={setFeedView}
                   view={feedView}
                 />
-              ) : displayedScreen === 'assistant' ? (
+              ) : displayedScreen === 'chat' || displayedScreen === 'assistant' ? (
                 <AssistantScreen
                   bottomInset={insets.bottom}
                   busy={busy}
